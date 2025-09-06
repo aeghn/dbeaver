@@ -1,4 +1,4 @@
-package org.jkiss.dbeaver.ui.views.verticaltab;/* DBeaver - Universal Database Manager
+/* DBeaver - Universal Database Manager
  * Copyright (C) 2010-2025 DBeaver Corp and others
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,9 @@ package org.jkiss.dbeaver.ui.views.verticaltab;/* DBeaver - Universal Database M
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.jkiss.dbeaver.ui.views.verticaltab;
 
+import org.eclipse.core.resources.IFile;
 import org.eclipse.jface.action.Action;
 import org.eclipse.jface.action.IMenuListener;
 import org.eclipse.jface.action.IMenuManager;
@@ -28,11 +30,26 @@ import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.*;
 import org.eclipse.ui.*;
+import org.eclipse.ui.part.FileEditorInput;
 import org.eclipse.ui.part.ViewPart;
+import org.eclipse.ui.texteditor.ITextEditor;
 import org.jkiss.dbeaver.Log;
+import org.jkiss.dbeaver.model.*;
+import org.jkiss.dbeaver.model.data.json.JSONUtils;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContext;
+import org.jkiss.dbeaver.model.exec.DBCExecutionContextDefaults;
+import org.jkiss.dbeaver.model.navigator.*;
 import org.jkiss.dbeaver.model.struct.DBSInstance;
+import org.jkiss.dbeaver.model.struct.DBSObject;
+import org.jkiss.dbeaver.ui.UIUtils;
+import org.jkiss.dbeaver.ui.actions.datasource.DataSourceToolbarUtils;
+import org.jkiss.dbeaver.ui.editors.EditorUtils;
 import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
+import org.jkiss.dbeaver.ui.navigator.NavigatorUtils;
+import org.jkiss.dbeaver.ui.navigator.database.DatabaseNavigatorView;
+import org.jkiss.dbeaver.ui.navigator.database.NavigatorViewBase;
+import org.jkiss.dbeaver.ui.navigator.project.ProjectExplorerView;
+import org.jkiss.dbeaver.ui.navigator.project.ProjectNavigatorView;
 
 import java.util.*;
 import java.util.List;
@@ -179,8 +196,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             public void setSelection(ISelection selection, boolean reveal) {
                 if (selection instanceof IStructuredSelection) {
                     Object firstElement = ((IStructuredSelection) selection).getFirstElement();
-                    if (firstElement instanceof TabInfo) {
-                        TabInfo tabInfo = (TabInfo) firstElement;
+                    if (firstElement instanceof TabInfo tabInfo) {
                         Composite tabComposite = tabComposites.get(tabInfo);
                         if (tabComposite != null) {
                             selectTab(tabComposite, tabInfo);
@@ -448,6 +464,8 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         IEditorPart activeEditor = workbenchPage.getActiveEditor();
 
         boolean filterCurrentDatabase = currentDatabaseCheck.getSelection();
+        DBPDataSourceContainer dataSource = DataSourceToolbarUtils.getCurrentDataSource(workbenchPage.getWorkbenchWindow());
+
 
         DBCExecutionContext currentExecutionContext = null;
         if (filterCurrentDatabase) {
@@ -464,15 +482,16 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             IEditorPart editor = editorRef.getEditor(false);
             if (editor != null) {
                 // Apply filters
-                if ((filterCurrentDatabase) && editor instanceof IDatabaseEditorInput edei) {
-                    DBCExecutionContext context = edei.getExecutionContext();
-                    if (context != null && currentExecutionContext != null) {
-                        // Check database filter
-                        DBSInstance currentInstance = currentExecutionContext.getDataSource().getDefaultInstance();
-                        DBSInstance tabInstance = context.getDataSource().getDefaultInstance();
-                        if (currentInstance != tabInstance) {
-                            continue;
+                if (filterCurrentDatabase) {
+                    try {
+                        log.error("editorRef" + editorRef.getEditorInput().getClass());
+                        if (editor instanceof DBPDataSourceContainerProvider dscp) {
+                            if (dscp.getDataSourceContainer() != dataSource) {
+                                continue;
+                            }
                         }
+                    } catch (PartInitException e) {
+
                     }
                 }
 
@@ -490,10 +509,14 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 }
 
                 tabInfo.isActive = (activeEditor != null && editorRef.equals(workbenchPage.getReference(activeEditor)));
+                tabInfo.isPinned = editorRef.isPinned();
+                tabInfo.tooltip = editorRef.getTitleToolTip();
 
                 tabs.add(tabInfo);
             }
         }
+
+        tabs.sort((e1, e2) -> e1.isPinned ? 1 : -(e2.isPinned ? 1 : 0));
 
         // Set input and refresh the viewer
         tabsViewer.setInput(tabs);
@@ -533,6 +556,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 if (child instanceof Label) {
                     child.setBackground(bgColor);
                     child.setForeground(fgColor);
+                    child.setToolTipText(tabInfo.tooltip);
                 } else if (child instanceof Button) {
                     // Set close button background to match selected tab
                     child.setBackground(bgColor);
@@ -548,6 +572,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
             for (Control child : tabComposite.getChildren()) {
                 if (child instanceof Label) {
+                    child.setToolTipText(tabInfo.tooltip);
                     child.setBackground(defaultBg);
                     child.setForeground(defaultFg);
                 } else if (child instanceof Button) {
@@ -611,10 +636,9 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         IEditorReference editorReference;
         String title;
         Image image;
+        String tooltip;
         boolean isActive;
-        String databaseName = "N/A"; // Database name, "N/A" if not applicable
-
-        // Note: equals() and hashCode() should be implemented if needed for proper comparison
-        // Currently using reference equality which is fine for this use case
+        boolean isPinned;
+        String databaseName = "N/A";
     }
 }
