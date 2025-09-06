@@ -18,7 +18,6 @@ import org.eclipse.jface.action.Action;
 import org.eclipse.jface.action.IMenuListener;
 import org.eclipse.jface.action.IMenuManager;
 import org.eclipse.jface.action.MenuManager;
-import org.eclipse.jface.resource.ImageDescriptor;
 import org.eclipse.jface.viewers.*;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.ScrolledComposite;
@@ -37,17 +36,11 @@ import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
 
 import java.util.*;
 import java.util.List;
-import java.util.function.Consumer;
 
-/**
- * VerticalEditorTabsView
- */
 public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     private static final Log log = Log.getLog(VerticalEditorTabsView.class);
 
-    private Composite controlArea;
     private Button currentDatabaseCheck;
-    private Button currentSchemaCheck;
     private ContentViewer tabsViewer;
     // Store references to created tabs for management
     Map<TabInfo, Composite> tabComposites;
@@ -70,12 +63,23 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         // 创建标签页展示区域
         createTabsArea(parent);
 
-        // 初始化数据
+        // FIX: 使用更可靠的方法初始化标签页
+        // 先立即刷新一次，然后延迟再次刷新以确保所有编辑器都已加载
         refreshTabs();
+
+        // 添加延迟刷新，确保所有编辑器都已初始化
+        parent.getDisplay().timerExec(300, new Runnable() {
+            @Override
+            public void run() {
+                if (!parent.isDisposed()) {
+                    refreshTabs();
+                }
+            }
+        });
     }
 
     private void createControlArea(Composite parent) {
-        controlArea = new Composite(parent, SWT.NONE);
+        Composite controlArea = new Composite(parent, SWT.NONE);
         controlArea.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
         GridLayout layout = new GridLayout(2, false);
         layout.marginHeight = 0;
@@ -86,16 +90,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         currentDatabaseCheck.setText("当前数据库");
         currentDatabaseCheck.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
         currentDatabaseCheck.addSelectionListener(new SelectionAdapter() {
-            @Override
-            public void widgetSelected(SelectionEvent e) {
-                refreshTabs();
-            }
-        });
-
-        currentSchemaCheck = new Button(controlArea, SWT.CHECK);
-        currentSchemaCheck.setText("当前Schema");
-        currentSchemaCheck.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        currentSchemaCheck.addSelectionListener(new SelectionAdapter() {
             @Override
             public void widgetSelected(SelectionEvent e) {
                 refreshTabs();
@@ -243,6 +237,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
     /**
      * Creates a custom tab item with icon, title, and close button
+     * Enhanced to show database and schema information in tooltip on hover
      */
     private void createTabItem(Composite parent, TabInfo tabInfo) {
         // Check if this tab already exists to prevent duplicates
@@ -264,6 +259,13 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         layout.marginHeight = 3;
         layout.horizontalSpacing = 5;
         tabComposite.setLayout(layout);
+
+        // Build tooltip text to show title, database, and schema information on hover
+        StringBuilder tooltipBuilder = new StringBuilder(tabInfo.title);
+        if (!"N/A".equals(tabInfo.databaseName)) {
+            tooltipBuilder.append("\nDatabase: ").append(tabInfo.databaseName);
+        }
+        tabComposite.setToolTipText(tooltipBuilder.toString());
 
         // Add mouse listener for selection to the entire tab composite
         tabComposite.addMouseListener(new MouseAdapter() {
@@ -345,9 +347,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 }
             }
         });
-
-        // Set tooltip for the entire tab
-        tabComposite.setToolTipText(tabInfo.title);
 
         // Style based on active state
         updateTabAppearance(tabComposite, tabInfo);
@@ -441,7 +440,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
     /**
      * Refreshes the tabs list based on current filters and editor state
-     * Enhanced to ensure proper highlighting of active tab
+     * Enhanced to collect database and schema information for each tab
      */
     private void refreshTabs() {
         List<TabInfo> tabs = new ArrayList<>();
@@ -449,10 +448,9 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         IEditorPart activeEditor = workbenchPage.getActiveEditor();
 
         boolean filterCurrentDatabase = currentDatabaseCheck.getSelection();
-        boolean filterCurrentSchema = currentSchemaCheck.getSelection();
 
         DBCExecutionContext currentExecutionContext = null;
-        if (filterCurrentDatabase || filterCurrentSchema) {
+        if (filterCurrentDatabase) {
             IEditorPart editor = workbenchPage.getActiveEditor();
             if (editor != null) {
                 IEditorInput editorInput = editor.getEditorInput();
@@ -466,54 +464,32 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             IEditorPart editor = editorRef.getEditor(false);
             if (editor != null) {
                 // Apply filters
-                if ((filterCurrentDatabase || filterCurrentSchema) && editor instanceof IDatabaseEditorInput edei) {
+                if ((filterCurrentDatabase) && editor instanceof IDatabaseEditorInput edei) {
                     DBCExecutionContext context = edei.getExecutionContext();
                     if (context != null && currentExecutionContext != null) {
                         // Check database filter
-                        if (filterCurrentDatabase) {
-                            DBSInstance currentInstance = currentExecutionContext.getDataSource().getDefaultInstance();
-                            DBSInstance tabInstance = context.getDataSource().getDefaultInstance();
-                            if (currentInstance != tabInstance) {
-                                continue;
-                            }
+                        DBSInstance currentInstance = currentExecutionContext.getDataSource().getDefaultInstance();
+                        DBSInstance tabInstance = context.getDataSource().getDefaultInstance();
+                        if (currentInstance != tabInstance) {
+                            continue;
                         }
-
-                        // Check schema filter (commented out as in original code)
-                        // if (filterCurrentSchema) {
-                        //     DBSObject currentDefaultObject = currentExecutionContext.getDefaultCatalog();
-                        //     if (currentDefaultObject == null) {
-                        //         currentDefaultObject = currentExecutionContext.getDefaultSchema();
-                        //     }
-                        //     DBSObject tabDefaultObject = context.getDefaultCatalog();
-                        //     if (tabDefaultObject == null) {
-                        //         tabDefaultObject = context.getDefaultSchema();
-                        //     }
-                        //     if (currentDefaultObject != tabDefaultObject) {
-                        //         continue;
-                        //     }
-                        // }
                     }
                 }
 
                 TabInfo tabInfo = new TabInfo();
                 tabInfo.editorReference = editorRef;
                 tabInfo.title = editorRef.getTitle();
+                tabInfo.image = editorRef.getTitleImage();
 
-                // FIX: Properly determine if this is the active tab
-                // Compare both the editor reference and the active editor
-                tabInfo.isActive = (activeEditor != null &&
-                        editorRef.equals(workbenchPage.getReference(activeEditor)));
-
-                // Get editor icon
-                ImageDescriptor imageDesc = null;
-                try {
-                    imageDesc = editorRef.getEditorInput().getImageDescriptor();
-                    if (imageDesc != null) {
-                        tabInfo.image = imageDesc.createImage();
+                // Get database and schema information if available
+                if (editor instanceof IDatabaseEditorInput dbInput) {
+                    DBCExecutionContext context = dbInput.getExecutionContext();
+                    if (context != null) {
+                        tabInfo.databaseName = context.getDataSource().getName(); // Set database name from data source
                     }
-                } catch (PartInitException ignored) {
-                    // Ignore exception, tab will be created without icon
                 }
+
+                tabInfo.isActive = (activeEditor != null && editorRef.equals(workbenchPage.getReference(activeEditor)));
 
                 tabs.add(tabInfo);
             }
@@ -539,6 +515,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         }
     }
 
+
     /**
      * Updates the visual appearance of a tab based on its active state
      * Enhanced to ensure consistent highlighting
@@ -553,7 +530,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             tabComposite.setBackground(bgColor);
 
             for (Control child : tabComposite.getChildren()) {
-                if (child instanceof Label && !(child instanceof Button)) {
+                if (child instanceof Label) {
                     child.setBackground(bgColor);
                     child.setForeground(fgColor);
                 } else if (child instanceof Button) {
@@ -570,7 +547,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             tabComposite.setBackground(defaultBg);
 
             for (Control child : tabComposite.getChildren()) {
-                if (child instanceof Label && !(child instanceof Button)) {
+                if (child instanceof Label) {
                     child.setBackground(defaultBg);
                     child.setForeground(defaultFg);
                 } else if (child instanceof Button) {
@@ -630,11 +607,14 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         // 不需要处理
     }
 
-    // 标签信息类
     private static class TabInfo {
         IEditorReference editorReference;
         String title;
         Image image;
         boolean isActive;
+        String databaseName = "N/A"; // Database name, "N/A" if not applicable
+
+        // Note: equals() and hashCode() should be implemented if needed for proper comparison
+        // Currently using reference equality which is fine for this use case
     }
 }
