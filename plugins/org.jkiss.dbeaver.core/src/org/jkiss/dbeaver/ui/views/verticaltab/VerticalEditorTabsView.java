@@ -23,6 +23,7 @@ import org.eclipse.jface.viewers.*;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.ScrolledComposite;
 import org.eclipse.swt.events.*;
+import org.eclipse.swt.graphics.Color;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
@@ -353,37 +354,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     }
 
     /**
-     * Updates the visual appearance of a tab based on its active state
-     */
-    private void updateTabAppearance(Composite tabComposite, TabInfo tabInfo) {
-        if (tabInfo.isActive) {
-            tabComposite.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-
-            for (Control child : tabComposite.getChildren()) {
-                if (child instanceof Label && !(child instanceof Button)) {
-                    child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-                    child.setForeground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT));
-                } else if (child instanceof Button) {
-                    // Set close button background to match selected tab
-                    child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-                }
-            }
-        } else {
-            // Use default colors for inactive tabs
-            tabComposite.setBackground(null);
-
-            for (Control child : tabComposite.getChildren()) {
-                if (child instanceof Label && !(child instanceof Button)) {
-                    child.setBackground(null);
-                    child.setForeground(null);
-                } else if (child instanceof Button) {
-                    child.setBackground(null);
-                }
-            }
-        }
-    }
-
-    /**
      * Handles tab selection and activation
      */
     private void selectTab(Composite tabComposite, TabInfo tabInfo) {
@@ -469,6 +439,10 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         workbenchPage.closeAllEditors(false);
     }
 
+    /**
+     * Refreshes the tabs list based on current filters and editor state
+     * Enhanced to ensure proper highlighting of active tab
+     */
     private void refreshTabs() {
         List<TabInfo> tabs = new ArrayList<>();
         IEditorReference[] editorRefs = workbenchPage.getEditorReferences();
@@ -491,11 +465,11 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         for (IEditorReference editorRef : editorRefs) {
             IEditorPart editor = editorRef.getEditor(false);
             if (editor != null) {
-                // 应用过滤器
+                // Apply filters
                 if ((filterCurrentDatabase || filterCurrentSchema) && editor instanceof IDatabaseEditorInput edei) {
                     DBCExecutionContext context = edei.getExecutionContext();
                     if (context != null && currentExecutionContext != null) {
-                        // 检查数据库过滤
+                        // Check database filter
                         if (filterCurrentDatabase) {
                             DBSInstance currentInstance = currentExecutionContext.getDataSource().getDefaultInstance();
                             DBSInstance tabInstance = context.getDataSource().getDefaultInstance();
@@ -504,48 +478,111 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                             }
                         }
 
-                        // 检查schema过滤
-//                        if (filterCurrentSchema) {
-//                            DBSObject currentDefaultObject = currentExecutionContext.getDefaultCatalog();
-//                            if (currentDefaultObject == null) {
-//                                currentDefaultObject = currentExecutionContext.getDefaultSchema();
-//                            }
-//                            DBSObject tabDefaultObject = context.getDefaultCatalog();
-//                            if (tabDefaultObject == null) {
-//                                tabDefaultObject = context.getDefaultSchema();
-//                            }
-//                            if (currentDefaultObject != tabDefaultObject) {
-//                                continue;
-//                            }
-//                        }
+                        // Check schema filter (commented out as in original code)
+                        // if (filterCurrentSchema) {
+                        //     DBSObject currentDefaultObject = currentExecutionContext.getDefaultCatalog();
+                        //     if (currentDefaultObject == null) {
+                        //         currentDefaultObject = currentExecutionContext.getDefaultSchema();
+                        //     }
+                        //     DBSObject tabDefaultObject = context.getDefaultCatalog();
+                        //     if (tabDefaultObject == null) {
+                        //         tabDefaultObject = context.getDefaultSchema();
+                        //     }
+                        //     if (currentDefaultObject != tabDefaultObject) {
+                        //         continue;
+                        //     }
+                        // }
                     }
                 }
 
                 TabInfo tabInfo = new TabInfo();
                 tabInfo.editorReference = editorRef;
                 tabInfo.title = editorRef.getTitle();
-                tabInfo.isActive = editorRef.equals(workbenchPage.getActiveEditor());
 
-                // 获取编辑器图标
+                // FIX: Properly determine if this is the active tab
+                // Compare both the editor reference and the active editor
+                tabInfo.isActive = (activeEditor != null &&
+                        editorRef.equals(workbenchPage.getReference(activeEditor)));
+
+                // Get editor icon
                 ImageDescriptor imageDesc = null;
                 try {
                     imageDesc = editorRef.getEditorInput().getImageDescriptor();
                     if (imageDesc != null) {
                         tabInfo.image = imageDesc.createImage();
                     }
-
-
                 } catch (PartInitException ignored) {
-
+                    // Ignore exception, tab will be created without icon
                 }
-
 
                 tabs.add(tabInfo);
             }
         }
 
+        // Set input and refresh the viewer
         tabsViewer.setInput(tabs);
         tabsViewer.refresh();
+
+        // FIX: Ensure the active tab is visually highlighted after refresh
+        if (activeEditor != null) {
+            var activeRef = workbenchPage.getReference(activeEditor);
+            for (TabInfo tab : tabs) {
+                if (tab.editorReference.equals(activeRef)) {
+                    Composite tabComposite = tabComposites.get(tab);
+                    if (tabComposite != null) {
+                        // Update appearance to ensure highlighting
+                        updateTabAppearance(tabComposite, tab);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Updates the visual appearance of a tab based on its active state
+     * Enhanced to ensure consistent highlighting
+     */
+    private void updateTabAppearance(Composite tabComposite, TabInfo tabInfo) {
+        // FIX: Use system colors that work across different platforms and themes
+        if (tabInfo.isActive) {
+            // Use system selection colors for active tab
+            Color bgColor = tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION);
+            Color fgColor = tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT);
+
+            tabComposite.setBackground(bgColor);
+
+            for (Control child : tabComposite.getChildren()) {
+                if (child instanceof Label && !(child instanceof Button)) {
+                    child.setBackground(bgColor);
+                    child.setForeground(fgColor);
+                } else if (child instanceof Button) {
+                    // Set close button background to match selected tab
+                    child.setBackground(bgColor);
+                    child.setForeground(fgColor);
+                }
+            }
+        } else {
+            // Use default colors for inactive tabs
+            Color defaultBg = tabComposite.getParent().getBackground();
+            Color defaultFg = tabComposite.getParent().getForeground();
+
+            tabComposite.setBackground(defaultBg);
+
+            for (Control child : tabComposite.getChildren()) {
+                if (child instanceof Label && !(child instanceof Button)) {
+                    child.setBackground(defaultBg);
+                    child.setForeground(defaultFg);
+                } else if (child instanceof Button) {
+                    child.setBackground(defaultBg);
+                    child.setForeground(defaultFg);
+                }
+            }
+        }
+
+        // FIX: Force redraw to ensure visual changes are applied immediately
+        tabComposite.redraw();
+        tabComposite.update();
     }
 
     @Override
