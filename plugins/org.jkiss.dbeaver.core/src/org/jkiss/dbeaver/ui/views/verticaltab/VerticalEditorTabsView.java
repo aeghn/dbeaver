@@ -21,31 +21,33 @@ import org.eclipse.jface.action.MenuManager;
 import org.eclipse.jface.resource.ImageDescriptor;
 import org.eclipse.jface.viewers.*;
 import org.eclipse.swt.SWT;
-import org.eclipse.swt.events.SelectionAdapter;
-import org.eclipse.swt.events.SelectionEvent;
+import org.eclipse.swt.custom.ScrolledComposite;
+import org.eclipse.swt.events.*;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.*;
 import org.eclipse.ui.*;
 import org.eclipse.ui.part.ViewPart;
+import org.jkiss.dbeaver.Log;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContext;
 import org.jkiss.dbeaver.model.struct.DBSInstance;
 import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * VerticalEditorTabsView
  */
 public class VerticalEditorTabsView extends ViewPart implements IPartListener {
-    public static final String VIEW_ID = "org.jkiss.dbeaver.ui.editors.verticaltabs.VerticalEditorTabsView";
+    private static final Log log = Log.getLog(VerticalEditorTabsView.class);
 
     private Composite controlArea;
     private Button currentDatabaseCheck;
     private Button currentSchemaCheck;
-    private TableViewer tabsViewer;
+    private ContentViewer tabsViewer;
     private IWorkbenchPage workbenchPage;
 
     @Override
@@ -95,23 +97,81 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         });
     }
 
+
     private void createTabsArea(Composite parent) {
-        tabsViewer = new TableViewer(parent, SWT.V_SCROLL | SWT.H_SCROLL | SWT.BORDER | SWT.FULL_SELECTION);
-        Table table = tabsViewer.getTable();
-        table.setLayoutData(new GridData(GridData.FILL_BOTH));
-        table.setHeaderVisible(false);
-        table.setLinesVisible(false);
+        // Create a ScrolledComposite to handle overflow when many tabs are present
+        ScrolledComposite scrolledComposite = new ScrolledComposite(parent, SWT.V_SCROLL | SWT.BORDER);
+        scrolledComposite.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        scrolledComposite.setExpandHorizontal(true);
+        scrolledComposite.setExpandVertical(true);
 
-        // 创建列：图标、标题、关闭按钮
-        TableViewerColumn iconColumn = new TableViewerColumn(tabsViewer, SWT.LEFT);
-        iconColumn.getColumn().setWidth(20);
+        // Create a container for all tab items
+        Composite tabsContainer = new Composite(scrolledComposite, SWT.NONE);
+        scrolledComposite.setContent(tabsContainer);
 
-        TableViewerColumn titleColumn = new TableViewerColumn(tabsViewer, SWT.LEFT);
-        titleColumn.getColumn().setWidth(200);
+        // Use a GridLayout with 1 column for vertical stacking of tabs
+        GridLayout containerLayout = new GridLayout(1, false);
+        containerLayout.marginWidth = 0;
+        containerLayout.marginHeight = 0;
+        containerLayout.verticalSpacing = 1; // Small gap between tabs
+        tabsContainer.setLayout(containerLayout);
 
-        TableViewerColumn closeColumn = new TableViewerColumn(tabsViewer, SWT.RIGHT);
-        closeColumn.getColumn().setWidth(20);
+        // Set up the content provider for the tabs
+        tabsViewer = new ContentViewer() {
+            private List<TabInfo> currentInput;
 
+            @Override
+            protected void inputChanged(Object input, Object oldInput) {
+                if (oldInput instanceof List) {
+                    // Clear existing tabs
+                    for (Control control : tabsContainer.getChildren()) {
+                        control.dispose();
+                    }
+                }
+
+                if (input instanceof List) {
+                    currentInput = (List<TabInfo>) input;
+                    refresh();
+                }
+            }
+
+            @Override
+            public void refresh() {
+                if (currentInput != null) {
+                    // Create a tab for each TabInfo
+                    for (TabInfo tabInfo : currentInput) {
+                        createTabItem(tabsContainer, tabInfo);
+                    }
+
+                    // Layout the container and set min size for scrolling
+                    tabsContainer.layout();
+                    scrolledComposite.setMinSize(tabsContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+                }
+            }
+
+            @Override
+            public Object getInput() {
+                return currentInput;
+            }
+
+            @Override
+            public ISelection getSelection() {
+                // Implement selection tracking if needed
+                return StructuredSelection.EMPTY;
+            }
+
+            @Override
+            public void setSelection(ISelection selection, boolean reveal) {
+                // Implement selection setting if needed
+            }
+
+            @Override
+            public Control getControl() {
+                return scrolledComposite;
+            }
+        };
+
+        // Set the content provider (simplified version)
         tabsViewer.setContentProvider(new IStructuredContentProvider() {
             @Override
             public Object[] getElements(Object inputElement) {
@@ -122,62 +182,142 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             }
         });
 
-        tabsViewer.setLabelProvider(new CellLabelProvider() {
+        // Create context menu
+        createContextMenu();
+    }
+
+    /**
+     * Creates a custom tab item with icon, title, and close button
+     */
+    private void createTabItem(Composite parent, TabInfo tabInfo) {
+        // Create a composite for the tab with a grid layout
+        Composite tabComposite = new Composite(parent, SWT.NONE);
+        tabComposite.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        tabComposite.setData("tabInfo", tabInfo); // Store reference to tab data
+
+        // Use a GridLayout with 3 columns: icon, title, close button
+        GridLayout layout = new GridLayout(3, false);
+        layout.marginWidth = 5;
+        layout.marginHeight = 3;
+        layout.horizontalSpacing = 5;
+        tabComposite.setLayout(layout);
+
+        // Add mouse listener for selection
+        tabComposite.addMouseListener(new MouseAdapter() {
             @Override
-            public void update(ViewerCell cell) {
-                if (cell.getElement() instanceof TabInfo) {
-                    TabInfo tabInfo = (TabInfo) cell.getElement();
-                    int columnIndex = cell.getColumnIndex();
-
-                    if (columnIndex == 0) {
-                        // 图标列
-                        if (tabInfo.image != null) {
-                            cell.setImage(tabInfo.image);
-                        }
-                    } else if (columnIndex == 1) {
-                        // 标题列
-                        cell.setText(tabInfo.title);
-                        // 高亮当前标签页
-                        if (tabInfo.isActive) {
-                            cell.setBackground(null);
-                            // UIUtils.getSharedTextColors().getColor(
-                            // UIUtils.getActiveWorkbenchWindow().getShell().getDisplay(),
-                            //                                    new Color(220, 230, 250))
-                        } else {
-                            cell.setBackground(null);
-                        }
-                    } else if (columnIndex == 2) {
-                        // 关闭按钮列
-                        cell.setText("×");
-                    }
-                }
+            public void mouseDown(MouseEvent e) {
+                selectTab(tabComposite, tabInfo);
             }
-        });
 
-        // 添加选择监听器
-        tabsViewer.addSelectionChangedListener(event -> {
-            IStructuredSelection selection = (IStructuredSelection) event.getSelection();
-            if (!selection.isEmpty()) {
-                TabInfo tabInfo = (TabInfo) selection.getFirstElement();
-                if (tabInfo.editorReference != null) {
-                    workbenchPage.activate(tabInfo.editorReference.getPart(true));
-                }
-            }
-        });
-
-        // 添加双击关闭功能
-        tabsViewer.addDoubleClickListener(event -> {
-            IStructuredSelection selection = (IStructuredSelection) event.getSelection();
-            if (!selection.isEmpty()) {
-                TabInfo tabInfo = (TabInfo) selection.getFirstElement();
+            @Override
+            public void mouseDoubleClick(MouseEvent e) {
+                // Close on double-click
                 if (tabInfo.editorReference != null) {
                     workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
                 }
             }
         });
 
-        // 添加上下文菜单
-        createContextMenu();
+        // Icon label
+        Label iconLabel = new Label(tabComposite, SWT.NONE);
+        if (tabInfo.image != null) {
+            iconLabel.setImage(tabInfo.image);
+        }
+        iconLabel.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+
+        // Title label
+        Label titleLabel = new Label(tabComposite, SWT.NONE);
+        titleLabel.setText(tabInfo.title);
+        titleLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+        // Close button with hover effects
+        Button closeButton = new Button(tabComposite, SWT.PUSH | SWT.FLAT);
+        closeButton.setText("×");
+        closeButton.setLayoutData(new GridData(SWT.RIGHT, SWT.CENTER, false, false));
+        closeButton.setToolTipText("Close tab");
+
+        // Set initial button appearance
+        closeButton.setBackground(tabComposite.getBackground());
+
+        // Add hover effects using MouseTrackListener
+        closeButton.addMouseTrackListener(new MouseTrackAdapter() {
+            @Override
+            public void mouseEnter(MouseEvent e) {
+                // Change background on hover
+                closeButton.setBackground(closeButton.getDisplay().getSystemColor(SWT.COLOR_WIDGET_LIGHT_SHADOW));
+            }
+
+            @Override
+            public void mouseExit(MouseEvent e) {
+                // Restore original background
+                closeButton.setBackground(tabComposite.getBackground());
+            }
+        });
+
+        // Add selection listener for the close button
+        closeButton.addSelectionListener(new SelectionAdapter() {
+            @Override
+            public void widgetSelected(SelectionEvent e) {
+                // Close the tab when the close button is clicked
+                if (tabInfo.editorReference != null) {
+                    workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
+                }
+            }
+        });
+
+        // Set tooltip for the entire tab
+        tabComposite.setToolTipText(tabInfo.title);
+
+        // Style based on active state
+        if (tabInfo.isActive) {
+            tabComposite.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+            titleLabel.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+            titleLabel.setForeground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT));
+            closeButton.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+        } else {
+            // Use default colors for inactive tabs
+        }
+    }
+
+    /**
+     * Handles tab selection
+     */
+    private void selectTab(Composite tabComposite, TabInfo tabInfo) {
+        // Reset background for all tabs
+        Composite parent = tabComposite.getParent();
+        for (Control control : parent.getChildren()) {
+            if (control instanceof Composite) {
+                Composite tabComp = (Composite) control;
+                tabComp.setBackground(null);
+
+                for (Control child : tabComp.getChildren()) {
+                    if (child instanceof Label && !(child instanceof Button)) {
+                        child.setBackground(null);
+                        child.setForeground(null);
+                    } else if (child instanceof Button) {
+                        // Reset close button background
+                        child.setBackground(null);
+                    }
+                }
+            }
+        }
+
+        // Highlight selected tab
+        tabComposite.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+        for (Control child : tabComposite.getChildren()) {
+            if (child instanceof Label && !(child instanceof Button)) {
+                child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+                child.setForeground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT));
+            } else if (child instanceof Button) {
+                // Set close button background to match selected tab
+                child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+            }
+        }
+
+        // Activate the editor
+        if (tabInfo.editorReference != null) {
+            workbenchPage.activate(tabInfo.editorReference.getPart(true));
+        }
     }
 
     private void createContextMenu() {
