@@ -34,7 +34,7 @@ import org.jkiss.dbeaver.model.exec.DBCExecutionContext;
 import org.jkiss.dbeaver.model.struct.DBSInstance;
 import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
 
-import java.util.ArrayList;
+import java.util.*;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -48,7 +48,12 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     private Button currentDatabaseCheck;
     private Button currentSchemaCheck;
     private ContentViewer tabsViewer;
+    // Store references to created tabs for management
+    Map<TabInfo, Composite> tabComposites;
+    // Create a container for all tab items
+    Composite tabsContainer;
     private IWorkbenchPage workbenchPage;
+
 
     @Override
     public void createPartControl(Composite parent) {
@@ -106,7 +111,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         scrolledComposite.setExpandVertical(true);
 
         // Create a container for all tab items
-        Composite tabsContainer = new Composite(scrolledComposite, SWT.NONE);
+        tabsContainer = new Composite(scrolledComposite, SWT.NONE);
         scrolledComposite.setContent(tabsContainer);
 
         // Use a GridLayout with 1 column for vertical stacking of tabs
@@ -116,18 +121,17 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         containerLayout.verticalSpacing = 1; // Small gap between tabs
         tabsContainer.setLayout(containerLayout);
 
+        // Store references to created tabs for management
+        tabComposites = new HashMap<>();
+
         // Set up the content provider for the tabs
         tabsViewer = new ContentViewer() {
             private List<TabInfo> currentInput;
 
             @Override
             protected void inputChanged(Object input, Object oldInput) {
-                if (oldInput instanceof List) {
-                    // Clear existing tabs
-                    for (Control control : tabsContainer.getChildren()) {
-                        control.dispose();
-                    }
-                }
+                // Clear all existing tabs before creating new ones
+                clearAllTabs();
 
                 if (input instanceof List) {
                     currentInput = (List<TabInfo>) input;
@@ -138,13 +142,24 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             @Override
             public void refresh() {
                 if (currentInput != null) {
-                    // Create a tab for each TabInfo
+                    // Clear existing tabs to prevent duplicates
+                    clearAllTabs();
+
+                    // Create a tab for each TabInfo, checking for duplicates
+                    Set<TabInfo> processedTabs = new HashSet<>();
                     for (TabInfo tabInfo : currentInput) {
-                        createTabItem(tabsContainer, tabInfo);
+                        // Prevent duplicate tab creation
+                        if (!processedTabs.contains(tabInfo)) {
+                            createTabItem(tabsContainer, tabInfo);
+                            processedTabs.add(tabInfo);
+                        }
                     }
 
                     // Layout the container and set min size for scrolling
                     tabsContainer.layout();
+                    scrolledComposite.setMinSize(tabsContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+
+                    // Update scrollbar if needed
                     scrolledComposite.setMinSize(tabsContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
                 }
             }
@@ -156,13 +171,27 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
             @Override
             public ISelection getSelection() {
-                // Implement selection tracking if needed
+                // Find the selected tab
+                for (Map.Entry<TabInfo, Composite> entry : tabComposites.entrySet()) {
+                    if (entry.getKey().isActive) {
+                        return new StructuredSelection(entry.getKey());
+                    }
+                }
                 return StructuredSelection.EMPTY;
             }
 
             @Override
             public void setSelection(ISelection selection, boolean reveal) {
-                // Implement selection setting if needed
+                if (selection instanceof IStructuredSelection) {
+                    Object firstElement = ((IStructuredSelection) selection).getFirstElement();
+                    if (firstElement instanceof TabInfo) {
+                        TabInfo tabInfo = (TabInfo) firstElement;
+                        Composite tabComposite = tabComposites.get(tabInfo);
+                        if (tabComposite != null) {
+                            selectTab(tabComposite, tabInfo);
+                        }
+                    }
+                }
             }
 
             @Override
@@ -173,6 +202,16 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
         // Set the content provider (simplified version)
         tabsViewer.setContentProvider(new IStructuredContentProvider() {
+            @Override
+            public void inputChanged(Viewer viewer, Object oldInput, Object newInput) {
+                // Let the ContentViewer handle input changes
+            }
+
+            @Override
+            public void dispose() {
+                // Clean up resources if needed
+            }
+
             @Override
             public Object[] getElements(Object inputElement) {
                 if (inputElement instanceof List) {
@@ -187,13 +226,36 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     }
 
     /**
+     * Clears all existing tabs from the container
+     */
+    private void clearAllTabs() {
+        // Dispose of all tab composites
+        for (Control control : tabsContainer.getChildren()) {
+            if (control instanceof Composite) {
+                control.dispose();
+            }
+        }
+
+        // Clear the tracking map
+        tabComposites.clear();
+    }
+
+    /**
      * Creates a custom tab item with icon, title, and close button
      */
     private void createTabItem(Composite parent, TabInfo tabInfo) {
+        // Check if this tab already exists to prevent duplicates
+        if (tabComposites.containsKey(tabInfo)) {
+            return;
+        }
+
         // Create a composite for the tab with a grid layout
         Composite tabComposite = new Composite(parent, SWT.NONE);
         tabComposite.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
         tabComposite.setData("tabInfo", tabInfo); // Store reference to tab data
+
+        // Track this tab composite
+        tabComposites.put(tabInfo, tabComposite);
 
         // Use a GridLayout with 3 columns: icon, title, close button
         GridLayout layout = new GridLayout(3, false);
@@ -202,18 +264,13 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         layout.horizontalSpacing = 5;
         tabComposite.setLayout(layout);
 
-        // Add mouse listener for selection
+        // Add mouse listener for selection to the entire tab composite
         tabComposite.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseDown(MouseEvent e) {
-                selectTab(tabComposite, tabInfo);
-            }
-
-            @Override
-            public void mouseDoubleClick(MouseEvent e) {
-                // Close on double-click
-                if (tabInfo.editorReference != null) {
-                    workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
+                // Only activate on left click, not on close button clicks
+                if (e.button == 1) {
+                    selectTab(tabComposite, tabInfo);
                 }
             }
         });
@@ -225,10 +282,30 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         }
         iconLabel.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
 
+        // Add mouse listener to the icon for selection
+        iconLabel.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseDown(MouseEvent e) {
+                if (e.button == 1) {
+                    selectTab(tabComposite, tabInfo);
+                }
+            }
+        });
+
         // Title label
         Label titleLabel = new Label(tabComposite, SWT.NONE);
         titleLabel.setText(tabInfo.title);
         titleLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+        // Add mouse listener to the title for selection
+        titleLabel.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseDown(MouseEvent e) {
+                if (e.button == 1) {
+                    selectTab(tabComposite, tabInfo);
+                }
+            }
+        });
 
         // Close button with hover effects
         Button closeButton = new Button(tabComposite, SWT.PUSH | SWT.FLAT);
@@ -261,6 +338,9 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 // Close the tab when the close button is clicked
                 if (tabInfo.editorReference != null) {
                     workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
+
+                    // Remove from our tracking map
+                    tabComposites.remove(tabInfo);
                 }
             }
         });
@@ -269,54 +349,70 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         tabComposite.setToolTipText(tabInfo.title);
 
         // Style based on active state
+        updateTabAppearance(tabComposite, tabInfo);
+    }
+
+    /**
+     * Updates the visual appearance of a tab based on its active state
+     */
+    private void updateTabAppearance(Composite tabComposite, TabInfo tabInfo) {
         if (tabInfo.isActive) {
             tabComposite.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-            titleLabel.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-            titleLabel.setForeground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT));
-            closeButton.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+
+            for (Control child : tabComposite.getChildren()) {
+                if (child instanceof Label && !(child instanceof Button)) {
+                    child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+                    child.setForeground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT));
+                } else if (child instanceof Button) {
+                    // Set close button background to match selected tab
+                    child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
+                }
+            }
         } else {
             // Use default colors for inactive tabs
+            tabComposite.setBackground(null);
+
+            for (Control child : tabComposite.getChildren()) {
+                if (child instanceof Label && !(child instanceof Button)) {
+                    child.setBackground(null);
+                    child.setForeground(null);
+                } else if (child instanceof Button) {
+                    child.setBackground(null);
+                }
+            }
         }
     }
 
     /**
-     * Handles tab selection
+     * Handles tab selection and activation
      */
     private void selectTab(Composite tabComposite, TabInfo tabInfo) {
-        // Reset background for all tabs
-        Composite parent = tabComposite.getParent();
-        for (Control control : parent.getChildren()) {
-            if (control instanceof Composite) {
-                Composite tabComp = (Composite) control;
-                tabComp.setBackground(null);
-
-                for (Control child : tabComp.getChildren()) {
-                    if (child instanceof Label && !(child instanceof Button)) {
-                        child.setBackground(null);
-                        child.setForeground(null);
-                    } else if (child instanceof Button) {
-                        // Reset close button background
-                        child.setBackground(null);
-                    }
-                }
+        // Reset all tabs to inactive appearance
+        for (Composite comp : tabComposites.values()) {
+            TabInfo info = (TabInfo) comp.getData("tabInfo");
+            if (info != null) {
+                info.isActive = false;
+                updateTabAppearance(comp, info);
             }
         }
 
-        // Highlight selected tab
-        tabComposite.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-        for (Control child : tabComposite.getChildren()) {
-            if (child instanceof Label && !(child instanceof Button)) {
-                child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-                child.setForeground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT));
-            } else if (child instanceof Button) {
-                // Set close button background to match selected tab
-                child.setBackground(tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION));
-            }
-        }
+        // Set this tab as active
+        tabInfo.isActive = true;
+        updateTabAppearance(tabComposite, tabInfo);
 
         // Activate the editor
         if (tabInfo.editorReference != null) {
-            workbenchPage.activate(tabInfo.editorReference.getPart(true));
+            try {
+                workbenchPage.activate(tabInfo.editorReference.getPart(true));
+            } catch (Exception e) {
+                // Log error but don't crash
+                System.err.println("Error activating editor: " + e.getMessage());
+            }
+        }
+
+        // Notify selection change if needed
+        if (tabsViewer != null) {
+            tabsViewer.setSelection(new StructuredSelection(tabInfo));
         }
     }
 
