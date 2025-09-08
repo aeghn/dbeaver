@@ -35,12 +35,15 @@ import org.eclipse.ui.part.ViewPart;
 import org.eclipse.ui.texteditor.ITextEditor;
 import org.jkiss.dbeaver.Log;
 import org.jkiss.dbeaver.model.*;
+import org.jkiss.dbeaver.model.connection.DBPConnectionConfiguration;
 import org.jkiss.dbeaver.model.data.json.JSONUtils;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContext;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContextDefaults;
 import org.jkiss.dbeaver.model.navigator.*;
 import org.jkiss.dbeaver.model.struct.DBSInstance;
 import org.jkiss.dbeaver.model.struct.DBSObject;
+import org.jkiss.dbeaver.model.struct.rdb.DBSCatalog;
+import org.jkiss.dbeaver.model.struct.rdb.DBSSchema;
 import org.jkiss.dbeaver.ui.UIUtils;
 import org.jkiss.dbeaver.ui.actions.datasource.DataSourceToolbarUtils;
 import org.jkiss.dbeaver.ui.editors.EditorUtils;
@@ -53,11 +56,16 @@ import org.jkiss.dbeaver.ui.navigator.project.ProjectNavigatorView;
 
 import java.util.*;
 import java.util.List;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     private static final Log log = Log.getLog(VerticalEditorTabsView.class);
 
-    private Button currentDatabaseCheck;
+    private Button curDatasource;
+    private Button curCatalog;
+    private Button curSchema;
+
     private ContentViewer tabsViewer;
     // Store references to created tabs for management
     Map<TabInfo, Composite> tabComposites;
@@ -65,26 +73,19 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     Composite tabsContainer;
     private IWorkbenchPage workbenchPage;
 
-
     @Override
     public void createPartControl(Composite parent) {
         workbenchPage = getSite().getPage();
         workbenchPage.addPartListener(this);
 
-        // 创建上下两部分布局
         parent.setLayout(new GridLayout(1, false));
 
-        // 创建控制区域
         createControlArea(parent);
 
-        // 创建标签页展示区域
         createTabsArea(parent);
 
-        // FIX: 使用更可靠的方法初始化标签页
-        // 先立即刷新一次，然后延迟再次刷新以确保所有编辑器都已加载
         refreshTabs();
 
-        // 添加延迟刷新，确保所有编辑器都已初始化
         parent.getDisplay().timerExec(300, new Runnable() {
             @Override
             public void run() {
@@ -101,19 +102,39 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         GridLayout layout = new GridLayout(2, false);
         layout.marginHeight = 0;
         layout.marginWidth = 0;
+
         controlArea.setLayout(layout);
 
-        currentDatabaseCheck = new Button(controlArea, SWT.CHECK);
-        currentDatabaseCheck.setText("当前数据库");
-        currentDatabaseCheck.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        currentDatabaseCheck.addSelectionListener(new SelectionAdapter() {
+        curDatasource = new Button(controlArea, SWT.CHECK);
+        curDatasource.setText("<N/A>");
+        curDatasource.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
+        curDatasource.addSelectionListener(new SelectionAdapter() {
+            @Override
+            public void widgetSelected(SelectionEvent e) {
+                refreshTabs();
+            }
+        });
+
+        curCatalog = new Button(controlArea, SWT.CHECK);
+        curCatalog.setText("<N/A>");
+        curCatalog.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
+        curCatalog.addSelectionListener(new SelectionAdapter() {
+            @Override
+            public void widgetSelected(SelectionEvent e) {
+                refreshTabs();
+            }
+        });
+
+        curSchema = new Button(controlArea, SWT.CHECK);
+        curSchema.setText("<N/A>");
+        curSchema.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
+        curSchema.addSelectionListener(new SelectionAdapter() {
             @Override
             public void widgetSelected(SelectionEvent e) {
                 refreshTabs();
             }
         });
     }
-
 
     private void createTabsArea(Composite parent) {
         // Create a ScrolledComposite to handle overflow when many tabs are present
@@ -271,17 +292,10 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
         // Use a GridLayout with 3 columns: icon, title, close button
         GridLayout layout = new GridLayout(3, false);
-        layout.marginWidth = 5;
-        layout.marginHeight = 3;
+        layout.marginWidth = 3;
+        layout.marginHeight = 1;
         layout.horizontalSpacing = 5;
         tabComposite.setLayout(layout);
-
-        // Build tooltip text to show title, database, and schema information on hover
-        StringBuilder tooltipBuilder = new StringBuilder(tabInfo.title);
-        if (!"N/A".equals(tabInfo.databaseName)) {
-            tooltipBuilder.append("\nDatabase: ").append(tabInfo.databaseName);
-        }
-        tabComposite.setToolTipText(tooltipBuilder.toString());
 
         // Add mouse listener for selection to the entire tab composite
         tabComposite.addMouseListener(new MouseAdapter() {
@@ -404,36 +418,33 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     private void createContextMenu() {
         MenuManager menuMgr = new MenuManager();
         menuMgr.setRemoveAllWhenShown(true);
-        menuMgr.addMenuListener(new IMenuListener() {
-            @Override
-            public void menuAboutToShow(IMenuManager manager) {
-                IStructuredSelection selection = (IStructuredSelection) tabsViewer.getSelection();
-                if (!selection.isEmpty()) {
-                    TabInfo tabInfo = (TabInfo) selection.getFirstElement();
+        menuMgr.addMenuListener(manager -> {
+            IStructuredSelection selection = (IStructuredSelection) tabsViewer.getSelection();
+            if (!selection.isEmpty()) {
+                TabInfo tabInfo = (TabInfo) selection.getFirstElement();
 
-                    manager.add(new Action("关闭") {
-                        @Override
-                        public void run() {
-                            if (tabInfo.editorReference != null) {
-                                workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
-                            }
+                manager.add(new Action("Close") {
+                    @Override
+                    public void run() {
+                        if (tabInfo.editorReference != null) {
+                            workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
                         }
-                    });
+                    }
+                });
 
-                    manager.add(new Action("关闭其他") {
-                        @Override
-                        public void run() {
-                            closeOtherTabs(tabInfo);
-                        }
-                    });
+                manager.add(new Action("Close Others") {
+                    @Override
+                    public void run() {
+                        closeOtherTabs(tabInfo);
+                    }
+                });
 
-                    manager.add(new Action("关闭所有") {
-                        @Override
-                        public void run() {
-                            closeAllTabs();
-                        }
-                    });
-                }
+                manager.add(new Action("Close All") {
+                    @Override
+                    public void run() {
+                        closeAllTabs();
+                    }
+                });
             }
         });
 
@@ -463,35 +474,39 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         IEditorReference[] editorRefs = workbenchPage.getEditorReferences();
         IEditorPart activeEditor = workbenchPage.getActiveEditor();
 
-        boolean filterCurrentDatabase = currentDatabaseCheck.getSelection();
-        DBPDataSourceContainer dataSource = DataSourceToolbarUtils.getCurrentDataSource(workbenchPage.getWorkbenchWindow());
+        boolean filterCurrentDataSource = curDatasource.getSelection();
+        boolean filterCurCatalog = curCatalog.getSelection();
+        boolean filterCurSchema = curSchema.getSelection();
+        DBPDataSourceContainer dataSource =
+                DataSourceToolbarUtils.getCurrentDataSource(workbenchPage.getWorkbenchWindow());
 
-
-        DBCExecutionContext currentExecutionContext = null;
-        if (filterCurrentDatabase) {
-            IEditorPart editor = workbenchPage.getActiveEditor();
-            if (editor != null) {
-                IEditorInput editorInput = editor.getEditorInput();
-                if (editorInput instanceof IDatabaseEditorInput edei) {
-                    currentExecutionContext = edei.getExecutionContext();
-                }
-            }
+        Conn conn = Conn.from(dataSource, activeEditor);
+        if (dataSource != null) {
+            curDatasource.setText("%s@%s:%s".formatted(conn.user, conn.ip, conn.port));
+            curCatalog.setText(conn.catalog);
+            curSchema.setText(conn.schema);
         }
 
         for (IEditorReference editorRef : editorRefs) {
             IEditorPart editor = editorRef.getEditor(false);
             if (editor != null) {
                 // Apply filters
-                if (filterCurrentDatabase) {
-                    try {
-                        log.error("editorRef" + editorRef.getEditorInput().getClass());
-                        if (editor instanceof DBPDataSourceContainerProvider dscp) {
-                            if (dscp.getDataSourceContainer() != dataSource) {
-                                continue;
-                            }
-                        }
-                    } catch (PartInitException e) {
+                Conn connB = null;
+                if (editor instanceof DBPDataSourceContainerProvider dscp) {
+                    connB = Conn.from(dscp.getDataSourceContainer(), editor);
+                }
 
+                if (filterCurSchema) {
+                    if (!Conn.sameSchema(conn, connB)) {
+                        continue;
+                    }
+                } else if (filterCurCatalog) {
+                    if (!Conn.sameCatalog(conn, connB)) {
+                        continue;
+                    }
+                } else if (filterCurrentDataSource) {
+                    if (!Conn.sameDatasource(conn, connB)) {
+                        continue;
                     }
                 }
 
@@ -499,16 +514,9 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 tabInfo.editorReference = editorRef;
                 tabInfo.title = editorRef.getTitle();
                 tabInfo.image = editorRef.getTitleImage();
+                tabInfo.conn = connB;
 
-                // Get database and schema information if available
-                if (editor instanceof IDatabaseEditorInput dbInput) {
-                    DBCExecutionContext context = dbInput.getExecutionContext();
-                    if (context != null) {
-                        tabInfo.databaseName = context.getDataSource().getName(); // Set database name from data source
-                    }
-                }
-
-                tabInfo.isActive = (activeEditor != null && editorRef.equals(workbenchPage.getReference(activeEditor)));
+                tabInfo.isActive = editorRef.equals(workbenchPage.getReference(activeEditor));
                 tabInfo.isPinned = editorRef.isPinned();
                 tabInfo.tooltip = editorRef.getTitleToolTip();
 
@@ -537,7 +545,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             }
         }
     }
-
 
     /**
      * Updates the visual appearance of a tab based on its active state
@@ -639,6 +646,100 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         String tooltip;
         boolean isActive;
         boolean isPinned;
-        String databaseName = "N/A";
+        Conn conn;
+    }
+
+    private record Conn(String id, String user, String ip, String port, String catalog, String schema) {
+        private static String NA = "<N/A>";
+
+        private static String read(Supplier<String> read) {
+            try {
+                String s = read.get();
+                if (s == null) {
+                    return NA;
+                }
+                return s;
+            } catch (Exception e) {
+                return NA;
+            }
+        }
+
+        private static boolean eq(String a, String b) {
+            if (a == null || b == null || List.of(a, b).contains(NA)) {
+                return false;
+            }
+            return Objects.equals(a, b);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == null || getClass() != o.getClass()) return false;
+            Conn conn = (Conn) o;
+
+            return eq(id, conn.id)
+                    && eq(ip, conn.ip)
+                    && eq(user, conn.user)
+                    && eq(port, conn.port)
+                    && eq(schema, conn.schema)
+                    && eq(catalog, conn.catalog);
+        }
+
+        public static boolean sameDatasource(Conn a, Conn b) {
+            if (a == null || b == null) {
+                return false;
+            }
+
+            return eq(a.id, b.id);
+        }
+
+        public static boolean sameCatalog(Conn a, Conn b) {
+            if (a == null || b == null) {
+                return false;
+            }
+
+            return sameDatasource(a, b) && eq(a.catalog, b.catalog);
+        }
+
+        public static boolean sameSchema(Conn a, Conn b) {
+            if (a == null || b == null) {
+                return false;
+            }
+
+            return sameCatalog(a, b) && eq(a.schema, b.schema);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(id, user, ip, port, catalog, schema);
+        }
+
+        public static Conn from(DBPDataSourceContainer dataSource, IEditorPart editorInput) {
+            DBPConnectionConfiguration conf = null;
+            try {
+                DBCExecutionContext executionContext;
+                if (editorInput.getEditorInput() instanceof IDatabaseEditorInput edi) {
+                    executionContext = edi.getExecutionContext();
+
+                } else {
+                    executionContext = null;
+                }
+                conf = dataSource.getConnectionConfiguration();
+                return new Conn(
+                        read(dataSource::getId),
+                        read(conf::getUserName),
+                        read(conf::getHostName),
+                        read(conf::getHostPort),
+                        read(() -> executionContext
+                                .getContextDefaults()
+                                .getDefaultCatalog()
+                                .getName()),
+                        read(() -> executionContext
+                                .getContextDefaults()
+                                .getDefaultSchema()
+                                .getName()));
+            } catch (Exception ex) {
+                return new Conn(NA, NA, NA, NA, NA, NA);
+            }
+        }
     }
 }
