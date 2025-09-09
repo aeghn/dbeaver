@@ -1,4 +1,3 @@
-
 package org.jkiss.dbeaver.ui.views.verticaltab;
 
 import org.eclipse.jface.action.Action;
@@ -11,28 +10,44 @@ import org.eclipse.swt.graphics.Color;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
-import org.eclipse.swt.widgets.*;
+import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Control;
+import org.eclipse.swt.widgets.Label;
 import org.eclipse.ui.*;
+import org.eclipse.ui.commands.IElementUpdater;
+import org.eclipse.ui.internal.IWorkbenchThemeConstants;
+import org.eclipse.ui.menus.UIElement;
 import org.eclipse.ui.part.ViewPart;
+import org.eclipse.ui.themes.ITheme;
 import org.jkiss.dbeaver.Log;
-import org.jkiss.dbeaver.model.*;
+import org.jkiss.dbeaver.model.DBPDataSource;
+import org.jkiss.dbeaver.model.DBPDataSourceContainer;
+import org.jkiss.dbeaver.model.DBPDataSourceContainerProvider;
+import org.jkiss.dbeaver.model.DBUtils;
 import org.jkiss.dbeaver.model.connection.DBPConnectionConfiguration;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContext;
-import org.jkiss.dbeaver.model.navigator.*;
+import org.jkiss.dbeaver.model.exec.DBCExecutionContextDefaults;
+import org.jkiss.dbeaver.model.struct.DBSObject;
+import org.jkiss.dbeaver.model.struct.DBSObjectContainer;
+import org.jkiss.dbeaver.model.struct.rdb.DBSCatalog;
+import org.jkiss.dbeaver.model.struct.rdb.DBSSchema;
 import org.jkiss.dbeaver.ui.actions.datasource.DataSourceToolbarUtils;
+import org.jkiss.dbeaver.ui.editors.DatabaseLazyEditorInput;
 import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
+import org.jkiss.dbeaver.ui.editors.entity.EntityEditor;
 import java.util.*;
-import java.util.List;
 import java.util.function.Supplier;
+import static org.jkiss.dbeaver.ui.actions.AbstractDataSourceHandler.getExecutionContextFromPart;
 
-public class VerticalEditorTabsView extends ViewPart implements IPartListener {
+public class VerticalEditorTabsView extends ViewPart implements IPartListener, IElementUpdater {
     private static final Log log = Log.getLog(VerticalEditorTabsView.class);
-    private Button curDatasource;
-    private Button curCatalog;
-    private Button curSchema;
-    private ContentViewer tabsViewer;
     Map<TabInfo, Composite> tabComposites;
     Composite tabsContainer;
+    private ButtonObj<Conn> curDatasource;
+    private ButtonObj<Conn.CatalogAndSchema> curSchema;
+    private TabInfo lastActiveTab;
+    private ContentViewer tabsViewer;
     private IWorkbenchPage workbenchPage;
 
     @Override
@@ -42,12 +57,12 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         parent.setLayout(new GridLayout(1, false));
         createControlArea(parent);
         createTabsArea(parent);
-        refreshTabs();
+        refreshAll();
         parent.getDisplay().timerExec(300, new Runnable() {
             @Override
             public void run() {
                 if (!parent.isDisposed()) {
-                    refreshTabs();
+                    refreshAll();
                 }
             }
         });
@@ -56,35 +71,28 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
     private void createControlArea(Composite parent) {
         Composite controlArea = new Composite(parent, SWT.NONE);
         controlArea.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        GridLayout layout = new GridLayout(2, false);
+        GridLayout layout = new GridLayout(1, false);
         layout.marginHeight = 0;
         layout.marginWidth = 0;
         controlArea.setLayout(layout);
-        curDatasource = new Button(controlArea, SWT.CHECK);
-        curDatasource.setText("<N/A>");
-        curDatasource.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        curDatasource.addSelectionListener(new SelectionAdapter() {
+        Button dsBut = new Button(controlArea, SWT.CHECK);
+        curDatasource = new ButtonObj<>("", dsBut);
+        dsBut.setText("<N/A>");
+        dsBut.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
+        dsBut.addSelectionListener(new SelectionAdapter() {
             @Override
             public void widgetSelected(SelectionEvent e) {
-                refreshTabs();
+                refreshAll();
             }
         });
-        curCatalog = new Button(controlArea, SWT.CHECK);
-        curCatalog.setText("<N/A>");
-        curCatalog.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        curCatalog.addSelectionListener(new SelectionAdapter() {
+        Button schemaBut = new Button(controlArea, SWT.CHECK);
+        curSchema = new ButtonObj<>("", schemaBut);
+        schemaBut.setText("<N/A>");
+        schemaBut.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
+        schemaBut.addSelectionListener(new SelectionAdapter() {
             @Override
             public void widgetSelected(SelectionEvent e) {
-                refreshTabs();
-            }
-        });
-        curSchema = new Button(controlArea, SWT.CHECK);
-        curSchema.setText("<N/A>");
-        curSchema.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        curSchema.addSelectionListener(new SelectionAdapter() {
-            @Override
-            public void widgetSelected(SelectionEvent e) {
-                refreshTabs();
+                refreshAll();
             }
         });
     }
@@ -164,24 +172,14 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 return scrolledComposite;
             }
         };
-        tabsViewer.setContentProvider(new IStructuredContentProvider() {
-            @Override
-            public void inputChanged(Viewer viewer, Object oldInput, Object newInput) {}
-
-            @Override
-            public void dispose() {}
-
-            @Override
-            public Object[] getElements(Object inputElement) {
-                if (inputElement instanceof List) {
-                    return ((List<?>) inputElement).toArray();
-                }
-                return new Object[0];
+        tabsViewer.setContentProvider((IStructuredContentProvider) inputElement -> {
+            if (inputElement instanceof List) {
+                return ((List<?>) inputElement).toArray();
             }
+            return new Object[0];
         });
         createContextMenu();
     }
-    /**      * Clears all existing tabs from the container      */
 
     private void clearAllTabs() {
         for (Control control : tabsContainer.getChildren()) {
@@ -191,7 +189,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         }
         tabComposites.clear();
     }
-    /**      * Creates a custom tab item with icon, title, and close button      * Enhanced to show database and schema information in tooltip on hover      */
 
     private void createTabItem(Composite parent, TabInfo tabInfo) {
         if (tabComposites.containsKey(tabInfo)) {
@@ -265,7 +262,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         });
         updateTabAppearance(tabComposite, tabInfo);
     }
-    /**      * Handles tab selection and activation      */
 
     private void selectTab(Composite tabComposite, TabInfo tabInfo) {
         for (Composite comp : tabComposites.values()) {
@@ -277,6 +273,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         }
         tabInfo.isActive = true;
         updateTabAppearance(tabComposite, tabInfo);
+        lastActiveTab = tabInfo; // 更新最后一个活动标签页
         if (tabInfo.editorReference != null) {
             try {
                 workbenchPage.activate(tabInfo.editorReference.getPart(true));
@@ -335,20 +332,42 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         workbenchPage.closeAllEditors(false);
     }
 
-    private void refreshTabs() {
+    private void refreshAll() {
+        refreshAll(true, true);
+    }
+
+    private void refreshAll(boolean controlFlag, boolean tabsFlag) {
         List<TabInfo> tabs = new ArrayList<>();
         IEditorReference[] editorRefs = workbenchPage.getEditorReferences();
         IEditorPart activeEditor = workbenchPage.getActiveEditor();
-        boolean filterCurrentDataSource = curDatasource.getSelection();
-        boolean filterCurCatalog = curCatalog.getSelection();
-        boolean filterCurSchema = curSchema.getSelection();
+        boolean filterCurrentDataSource = curDatasource.isSelected();
+        boolean filterCurSchema = curSchema.isSelected();
         DBPDataSourceContainer dataSource =
                 DataSourceToolbarUtils.getCurrentDataSource(workbenchPage.getWorkbenchWindow());
         Conn conn = Conn.from(dataSource, activeEditor);
-        if (dataSource != null) {
-            curDatasource.setText("%s@%s:%s".formatted(conn.user, conn.ip, conn.port));
-            curCatalog.setText(conn.catalog);
-            curSchema.setText(conn.schema);
+
+        // 检查 lastActiveTab 的编辑器是否仍然打开，如果已关闭则重置
+        if (lastActiveTab != null) {
+            boolean editorStillOpen = false;
+            for (IEditorReference ref : editorRefs) {
+                if (ref.equals(lastActiveTab.editorReference)) {
+                    editorStillOpen = true;
+                    break;
+                }
+            }
+            if (!editorStillOpen) {
+                lastActiveTab = null; // 编辑器已关闭，重置 lastActiveTab
+            }
+        }
+
+        if (controlFlag) {
+            if (dataSource != null) {
+                curDatasource.updateT(conn);
+                curSchema.updateT(conn.catalogAndSchema);
+            }
+        }
+        if (!tabsFlag) {
+            return;
         }
         for (IEditorReference editorRef : editorRefs) {
             IEditorPart editor = editorRef.getEditor(false);
@@ -361,10 +380,6 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                     if (!Conn.sameSchema(conn, connB)) {
                         continue;
                     }
-                } else if (filterCurCatalog) {
-                    if (!Conn.sameCatalog(conn, connB)) {
-                        continue;
-                    }
                 } else if (filterCurrentDataSource) {
                     if (!Conn.sameDatasource(conn, connB)) {
                         continue;
@@ -375,7 +390,15 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 tabInfo.title = editorRef.getTitle();
                 tabInfo.image = editorRef.getTitleImage();
                 tabInfo.conn = connB;
-                tabInfo.isActive = editorRef.equals(workbenchPage.getReference(activeEditor));
+                // 设置 isActive：如果活动编辑器不为 null，基于活动编辑器设置；否则基于 lastActiveTab 设置
+                if (activeEditor != null) {
+                    tabInfo.isActive = editorRef.equals(workbenchPage.getReference(activeEditor));
+                    if (tabInfo.isActive) {
+                        lastActiveTab = tabInfo; // 更新 lastActiveTab 为当前活动标签页
+                    }
+                } else {
+                    tabInfo.isActive = (lastActiveTab != null && lastActiveTab.editorReference.equals(editorRef));
+                }
                 tabInfo.isPinned = editorRef.isPinned();
                 tabInfo.tooltip = editorRef.getTitleToolTip();
                 tabs.add(tabInfo);
@@ -384,6 +407,7 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         tabs.sort((e1, e2) -> e1.isPinned ? 1 : -(e2.isPinned ? 1 : 0));
         tabsViewer.setInput(tabs);
         tabsViewer.refresh();
+        // 更新活动标签页的外观（即使活动编辑器为 null，lastActiveTab 可能已设置）
         if (activeEditor != null) {
             var activeRef = workbenchPage.getReference(activeEditor);
             for (TabInfo tab : tabs) {
@@ -395,14 +419,22 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                     break;
                 }
             }
+        } else if (lastActiveTab != null) {
+            // 如果活动编辑器为 null，但 lastActiveTab 存在，确保其外观更新
+            Composite tabComposite = tabComposites.get(lastActiveTab);
+            if (tabComposite != null) {
+                updateTabAppearance(tabComposite, lastActiveTab);
+            }
         }
     }
 
     private void updateTabAppearance(Composite tabComposite, TabInfo tabInfo) {
+        ITheme theme = PlatformUI.getWorkbench().getThemeManager().getCurrentTheme();
         if (tabInfo.isActive) {
-            Color bgColor = tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION);
-            Color fgColor = tabComposite.getDisplay().getSystemColor(SWT.COLOR_LIST_SELECTION_TEXT);
+            Color bgColor = theme.getColorRegistry().get(IWorkbenchThemeConstants.ACTIVE_TAB_VERTICAL);
+            Color fgColor = theme.getColorRegistry().get(IWorkbenchThemeConstants.ACTIVE_TAB_TEXT_COLOR);
             tabComposite.setBackground(bgColor);
+            tabComposite.setBackgroundMode(SWT.INHERIT_NONE);
             for (Control child : tabComposite.getChildren()) {
                 if (child instanceof Label) {
                     child.setBackground(bgColor);
@@ -414,8 +446,8 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
                 }
             }
         } else {
-            Color defaultBg = tabComposite.getParent().getBackground();
-            Color defaultFg = tabComposite.getParent().getForeground();
+            Color defaultBg = theme.getColorRegistry().get(IWorkbenchThemeConstants.INACTIVE_TAB_VERTICAL);
+            Color defaultFg = theme.getColorRegistry().get(IWorkbenchThemeConstants.INACTIVE_TAB_TEXT_COLOR);
             tabComposite.setBackground(defaultBg);
             for (Control child : tabComposite.getChildren()) {
                 if (child instanceof Label) {
@@ -442,27 +474,28 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         if (workbenchPage != null) {
             workbenchPage.removePartListener(this);
         }
+        lastActiveTab = null; // 清理资源
         super.dispose();
     }
 
     @Override
     public void partOpened(IWorkbenchPart part) {
         if (part instanceof IEditorPart) {
-            refreshTabs();
+            refreshAll();
         }
     }
 
     @Override
     public void partClosed(IWorkbenchPart part) {
         if (part instanceof IEditorPart) {
-            refreshTabs();
+            refreshAll();
         }
     }
 
     @Override
     public void partActivated(IWorkbenchPart part) {
         if (part instanceof IEditorPart) {
-            refreshTabs();
+            refreshAll();
         }
     }
 
@@ -471,6 +504,14 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
 
     @Override
     public void partBroughtToTop(IWorkbenchPart part) {}
+
+    @Override
+    public void updateElement(UIElement element, Map parameters) {
+        if ("true".equals(parameters.get("noCustomLabel"))) {
+            return;
+        }
+        refreshAll(true, false);
+    }
 
     private static class TabInfo {
         IEditorReference editorReference;
@@ -482,16 +523,14 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
         Conn conn;
     }
 
-    private record Conn(String id, String user, String ip, String port, String catalog, String schema) {
-        private static String NA = "<N/A>";
+    private record Conn(String id, String user, String ip, String port, CatalogAndSchema catalogAndSchema)
+            implements ButtonObj.TextObj {
+        private static final String NA = "<N/A>";
 
         private static String read(Supplier<String> read) {
             try {
                 String s = read.get();
-                if (s == null) {
-                    return NA;
-                }
-                return s;
+                return Objects.requireNonNullElse(s, NA);
             } catch (Exception e) {
                 return NA;
             }
@@ -504,16 +543,11 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             return Objects.equals(a, b);
         }
 
-        @Override
-        public boolean equals(Object o) {
-            if (o == null || getClass() != o.getClass()) return false;
-            Conn conn = (Conn) o;
-            return eq(id, conn.id)
-                    && eq(ip, conn.ip)
-                    && eq(user, conn.user)
-                    && eq(port, conn.port)
-                    && eq(schema, conn.schema)
-                    && eq(catalog, conn.catalog);
+        public static boolean sameSchema(Conn a, Conn b) {
+            if (a == null || b == null) {
+                return false;
+            }
+            return sameDatasource(a, b) && Objects.equals(a.catalogAndSchema, b.catalogAndSchema);
         }
 
         public static boolean sameDatasource(Conn a, Conn b) {
@@ -523,50 +557,104 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener {
             return eq(a.id, b.id);
         }
 
-        public static boolean sameCatalog(Conn a, Conn b) {
-            if (a == null || b == null) {
-                return false;
-            }
-            return sameDatasource(a, b) && eq(a.catalog, b.catalog);
-        }
-
-        public static boolean sameSchema(Conn a, Conn b) {
-            if (a == null || b == null) {
-                return false;
-            }
-            return sameCatalog(a, b) && eq(a.schema, b.schema);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(id, user, ip, port, catalog, schema);
-        }
-
-        public static Conn from(DBPDataSourceContainer dataSource, IEditorPart editorInput) {
-            DBPConnectionConfiguration conf = null;
+        public static Conn from(DBPDataSourceContainer dataSource, IEditorPart editor) {
             try {
-                DBCExecutionContext executionContext;
-                if (editorInput.getEditorInput() instanceof IDatabaseEditorInput edi) {
-                    executionContext = edi.getExecutionContext();
-                } else {
-                    executionContext = null;
-                }
-                conf = dataSource.getConnectionConfiguration();
+                DBPConnectionConfiguration conf = dataSource.getConnectionConfiguration();
+                CatalogAndSchema cs = CatalogAndSchema.from(editor);
                 return new Conn(
                         read(dataSource::getId),
                         read(conf::getUserName),
                         read(conf::getHostName),
                         read(conf::getHostPort),
-                        read(() -> executionContext
-                                .getContextDefaults()
-                                .getDefaultCatalog()
-                                .getName()),
-                        read(() -> executionContext
-                                .getContextDefaults()
-                                .getDefaultSchema()
-                                .getName()));
+                        cs);
             } catch (Exception ex) {
-                return new Conn(NA, NA, NA, NA, NA, NA);
+                return new Conn(NA, NA, NA, NA, new CatalogAndSchema(null, null));
+            }
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == null || getClass() != o.getClass()) return false;
+            Conn conn = (Conn) o;
+            return eq(id, conn.id)
+                    && eq(ip, conn.ip)
+                    && eq(user, conn.user)
+                    && eq(port, conn.port)
+                    && Objects.equals(catalogAndSchema, conn.catalogAndSchema);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(id, user, ip, port, catalogAndSchema);
+        }
+
+        @Override
+        public String text() {
+            return "%s@%s:%s".formatted(user, ip, port);
+        }
+
+        record CatalogAndSchema(String catalog, String schema) implements ButtonObj.TextObj {
+            static CatalogAndSchema from(IEditorPart activeEditor) {
+                IEditorInput editorInput = activeEditor.getEditorInput();
+                if (editorInput instanceof IDatabaseEditorInput) {
+                    if (editorInput instanceof DatabaseLazyEditorInput) {
+                        activeEditor.addPropertyListener(new IPropertyListener() {
+                            @Override
+                            public void propertyChanged(Object source, int propId) {
+                                if (EntityEditor.PROP_TITLE == propId) {
+                                    DataSourceToolbarUtils.updateCommandsUI();
+                                    activeEditor.removePropertyListener(this);
+                                }
+                            }
+                        });
+                    }
+                    DBCExecutionContext executionContext = ((IDatabaseEditorInput) editorInput).getExecutionContext();
+                    if (executionContext != null) {
+                        DBSObject schemaObject = DBUtils.getSelectedObject(executionContext);
+                        if (schemaObject != null) {
+                            DBSObject schemaParent = schemaObject.getParentObject();
+                            if (schemaParent instanceof DBSObjectContainer
+                                    && !(schemaParent instanceof DBPDataSource)) {
+                                return new CatalogAndSchema(schemaParent.getName(), schemaObject.getName());
+                            } else {
+                                return new CatalogAndSchema(null, schemaObject.getName());
+                            }
+                        }
+                    }
+                } else {
+                    DBCExecutionContext executionContext = getExecutionContextFromPart(activeEditor);
+                    DBCExecutionContextDefaults<?, ?> contextDefaults = null;
+                    if (executionContext != null) {
+                        contextDefaults = executionContext.getContextDefaults();
+                    }
+                    if (contextDefaults != null) {
+                        DBSCatalog defaultCatalog = contextDefaults.getDefaultCatalog();
+                        DBSSchema defaultSchema = contextDefaults.getDefaultSchema();
+                        if (defaultCatalog != null
+                                && (defaultSchema != null || contextDefaults.supportsSchemaChange())) {
+                            if (defaultSchema == null) {
+                                return new CatalogAndSchema(null, null);
+                            } else {
+                                return new CatalogAndSchema(defaultCatalog.getName(), defaultSchema.getName());
+                            }
+                        } else if (defaultCatalog != null) {
+                            return new CatalogAndSchema(defaultCatalog.getName(), null);
+                        } else if (defaultSchema != null) {
+                            return new CatalogAndSchema(null, defaultSchema.getName());
+                        }
+                    }
+                }
+                return new CatalogAndSchema(null, null);
+            }
+
+            @Override
+            public String toString() {
+                return text();
+            }
+
+            @Override
+            public String text() {
+                return catalog != null ? (schema != null ? "%s@%s".formatted(schema, catalog) : catalog) : "?";
             }
         }
     }
