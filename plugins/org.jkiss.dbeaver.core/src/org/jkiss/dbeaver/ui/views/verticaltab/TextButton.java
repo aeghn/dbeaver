@@ -17,17 +17,15 @@
 package org.jkiss.dbeaver.ui.views.verticaltab;
 
 import org.eclipse.swt.widgets.Button;
-import org.jkiss.utils.StringUtils;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class ButtonObj<T extends ButtonObj.TextObj> {
+public class TextButton<T extends TextButton.TextObj> {
     private final Button button;
     private final AtomicReference<String> renderedText;
-    private T t;
 
-    public ButtonObj(String renderedText, Button button) {
+    public TextButton(String renderedText, Button button) {
         this.renderedText = new AtomicReference<>(renderedText);
         this.button = button;
     }
@@ -37,12 +35,13 @@ public class ButtonObj<T extends ButtonObj.TextObj> {
         return button;
     }
 
-    public void updateT(T t) {
-        if (t == null) {
+    public void update(T obj) {
+        if (obj == null) {
             renderedText.set("?");
             return;
         }
-        String text = t.text();
+        String text = obj.text();
+        text = text == null ? "?" : text;
         if (!Objects.equals(text, renderedText.get())) {
             button.setText(text);
             renderedText.set(text);
