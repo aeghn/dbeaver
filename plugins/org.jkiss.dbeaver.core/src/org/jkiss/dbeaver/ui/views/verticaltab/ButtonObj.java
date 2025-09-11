@@ -38,6 +38,10 @@ public class ButtonObj<T extends ButtonObj.TextObj> {
     }
 
     public void updateT(T t) {
+        if (t == null) {
+            renderedText.set("?");
+            return;
+        }
         String text = t.text();
         if (!Objects.equals(text, renderedText.get())) {
             button.setText(text);

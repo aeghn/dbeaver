@@ -5,8 +5,11 @@ import org.eclipse.jface.action.MenuManager;
 import org.eclipse.jface.viewers.*;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.ScrolledComposite;
-import org.eclipse.swt.events.*;
-import org.eclipse.swt.graphics.Color;
+import org.eclipse.swt.events.MouseAdapter;
+import org.eclipse.swt.events.MouseEvent;
+import org.eclipse.swt.events.MouseTrackAdapter;
+import org.eclipse.swt.events.SelectionListener;
+import org.eclipse.swt.graphics.GC;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
@@ -16,100 +19,129 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.ui.*;
 import org.eclipse.ui.commands.IElementUpdater;
-import org.eclipse.ui.internal.IWorkbenchThemeConstants;
+import org.eclipse.ui.internal.WorkbenchWindow;
 import org.eclipse.ui.menus.UIElement;
 import org.eclipse.ui.part.ViewPart;
-import org.eclipse.ui.themes.ITheme;
 import org.jkiss.dbeaver.Log;
-import org.jkiss.dbeaver.model.DBPDataSource;
-import org.jkiss.dbeaver.model.DBPDataSourceContainer;
-import org.jkiss.dbeaver.model.DBPDataSourceContainerProvider;
-import org.jkiss.dbeaver.model.DBUtils;
+import org.jkiss.dbeaver.model.*;
 import org.jkiss.dbeaver.model.connection.DBPConnectionConfiguration;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContext;
 import org.jkiss.dbeaver.model.exec.DBCExecutionContextDefaults;
+import org.jkiss.dbeaver.model.navigator.DBNDatabaseNode;
 import org.jkiss.dbeaver.model.struct.DBSObject;
 import org.jkiss.dbeaver.model.struct.DBSObjectContainer;
 import org.jkiss.dbeaver.model.struct.rdb.DBSCatalog;
 import org.jkiss.dbeaver.model.struct.rdb.DBSSchema;
+import org.jkiss.dbeaver.ui.UITextUtils;
+import org.jkiss.dbeaver.ui.UIUtils;
 import org.jkiss.dbeaver.ui.actions.datasource.DataSourceToolbarUtils;
 import org.jkiss.dbeaver.ui.editors.DatabaseLazyEditorInput;
 import org.jkiss.dbeaver.ui.editors.IDatabaseEditorInput;
 import org.jkiss.dbeaver.ui.editors.entity.EntityEditor;
+
 import java.util.*;
 import java.util.function.Supplier;
+
 import static org.jkiss.dbeaver.ui.actions.AbstractDataSourceHandler.getExecutionContextFromPart;
 
+/**
+ * VerticalEditorTabsView - 垂直编辑器标签视图
+ * 优化版本：改进了性能、资源管理和代码结构
+ */
 public class VerticalEditorTabsView extends ViewPart implements IPartListener, IElementUpdater {
     private static final Log log = Log.getLog(VerticalEditorTabsView.class);
-    Map<TabInfo, Composite> tabComposites;
-    Composite tabsContainer;
+
+    // 常量定义
+    private static final int REFRESH_DELAY_MS = 300;
+    private static final String NA = "?";
+    private static final String TAB_INFO_KEY = "tabInfo";
+
+    // UI 组件
+    private Composite tabsContainer;
     private ButtonObj<Conn> curDatasource;
     private ButtonObj<Conn.CatalogAndSchema> curSchema;
-    private TabInfo lastActiveTab;
     private ContentViewer tabsViewer;
+    private ScrolledComposite scrolledComposite;
+
+    // 数据状态
+    private Map<TabInfo, Composite> tabComposites = new HashMap<>();
+    private TabInfo lastActiveTab;
     private IWorkbenchPage workbenchPage;
 
     @Override
     public void createPartControl(Composite parent) {
         workbenchPage = getSite().getPage();
         workbenchPage.addPartListener(this);
+
         parent.setLayout(new GridLayout(1, false));
         createControlArea(parent);
         createTabsArea(parent);
+
+        // 初始刷新
         refreshAll();
-        parent.getDisplay().timerExec(300, new Runnable() {
-            @Override
-            public void run() {
-                if (!parent.isDisposed()) {
-                    refreshAll();
-                }
+
+        // 延迟刷新以确保UI完全加载
+        parent.getDisplay().timerExec(REFRESH_DELAY_MS, () -> {
+            if (!parent.isDisposed()) {
+                refreshAll();
             }
         });
     }
 
+    /**
+     * 创建控制区域（数据源和模式选择）
+     */
     private void createControlArea(Composite parent) {
         Composite controlArea = new Composite(parent, SWT.NONE);
         controlArea.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
+
         GridLayout layout = new GridLayout(1, false);
         layout.marginHeight = 0;
         layout.marginWidth = 0;
         controlArea.setLayout(layout);
+
+        // 数据源选择按钮
         Button dsBut = new Button(controlArea, SWT.CHECK);
         curDatasource = new ButtonObj<>("", dsBut);
-        dsBut.setText("<N/A>");
+        dsBut.setText(NA);
         dsBut.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        dsBut.addSelectionListener(new SelectionAdapter() {
-            @Override
-            public void widgetSelected(SelectionEvent e) {
-                refreshAll();
-            }
-        });
+        dsBut.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> refreshAll()));
+
+        // 模式选择按钮
         Button schemaBut = new Button(controlArea, SWT.CHECK);
         curSchema = new ButtonObj<>("", schemaBut);
-        schemaBut.setText("<N/A>");
+        schemaBut.setText(NA);
         schemaBut.setLayoutData(new GridData(GridData.FILL_HORIZONTAL));
-        schemaBut.addSelectionListener(new SelectionAdapter() {
-            @Override
-            public void widgetSelected(SelectionEvent e) {
-                refreshAll();
-            }
-        });
+        schemaBut.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> refreshAll()));
     }
 
+    /**
+     * 创建标签区域
+     */
     private void createTabsArea(Composite parent) {
-        ScrolledComposite scrolledComposite = new ScrolledComposite(parent, SWT.V_SCROLL | SWT.BORDER);
+        scrolledComposite = new ScrolledComposite(parent, SWT.V_SCROLL | SWT.BORDER);
         scrolledComposite.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
         scrolledComposite.setExpandHorizontal(true);
         scrolledComposite.setExpandVertical(true);
+
         tabsContainer = new Composite(scrolledComposite, SWT.NONE);
         scrolledComposite.setContent(tabsContainer);
+
         GridLayout containerLayout = new GridLayout(1, false);
         containerLayout.marginWidth = 0;
         containerLayout.marginHeight = 0;
         containerLayout.verticalSpacing = 1;
         tabsContainer.setLayout(containerLayout);
-        tabComposites = new HashMap<>();
+
+        // 初始化标签查看器
+        initTabsViewer();
+        createContextMenu();
+    }
+
+    /**
+     * 初始化标签查看器
+     */
+    private void initTabsViewer() {
         tabsViewer = new ContentViewer() {
             private List<TabInfo> currentInput;
 
@@ -127,15 +159,15 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
                 if (currentInput != null) {
                     clearAllTabs();
                     Set<TabInfo> processedTabs = new HashSet<>();
+
                     for (TabInfo tabInfo : currentInput) {
                         if (!processedTabs.contains(tabInfo)) {
                             createTabItem(tabsContainer, tabInfo);
                             processedTabs.add(tabInfo);
                         }
                     }
-                    tabsContainer.layout();
-                    scrolledComposite.setMinSize(tabsContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
-                    scrolledComposite.setMinSize(tabsContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+
+                    updateContainerLayout();
                 }
             }
 
@@ -172,74 +204,156 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
                 return scrolledComposite;
             }
         };
-        tabsViewer.setContentProvider((IStructuredContentProvider) inputElement -> {
-            if (inputElement instanceof List) {
-                return ((List<?>) inputElement).toArray();
+
+        // 设置内容提供器
+        tabsViewer.setContentProvider(new IStructuredContentProvider() {
+            @Override
+            public Object[] getElements(Object inputElement) {
+                if (inputElement instanceof List) {
+                    return ((List<?>) inputElement).toArray();
+                }
+                return new Object[0];
             }
-            return new Object[0];
+
+            @Override
+            public void dispose() {
+                // 无资源需要释放
+            }
+
+            @Override
+            public void inputChanged(Viewer viewer, Object oldInput, Object newInput) {
+                // 处理在inputChanged中
+            }
         });
-        createContextMenu();
     }
 
+    /**
+     * 更新容器布局和滚动大小
+     */
+    private void updateContainerLayout() {
+        tabsContainer.layout();
+        scrolledComposite.setMinSize(tabsContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+    }
+
+    /**
+     * 清除所有标签
+     */
     private void clearAllTabs() {
         for (Control control : tabsContainer.getChildren()) {
-            if (control instanceof Composite) {
+            if (!control.isDisposed()) {
                 control.dispose();
             }
         }
         tabComposites.clear();
     }
 
+    /**
+     * 创建单个标签项
+     */
     private void createTabItem(Composite parent, TabInfo tabInfo) {
         if (tabComposites.containsKey(tabInfo)) {
             return;
         }
+
         Composite tabComposite = new Composite(parent, SWT.NONE);
         tabComposite.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
-        tabComposite.setData("tabInfo", tabInfo);
+        tabComposite.setData(TAB_INFO_KEY, tabInfo);
         tabComposites.put(tabInfo, tabComposite);
+
         GridLayout layout = new GridLayout(3, false);
         layout.marginWidth = 3;
         layout.marginHeight = 1;
         layout.horizontalSpacing = 3;
         tabComposite.setLayout(layout);
-        tabComposite.addMouseListener(new MouseAdapter() {
+
+        // 添加标签点击监听
+        addTabSelectionListener(tabComposite, tabInfo);
+
+        // 创建图标标签
+        Label iconLabel = createIconLabel(tabComposite, tabInfo);
+
+        // 创建标题标签
+        Label titleLabel = createTitleLabel(tabComposite, tabInfo);
+
+        // 创建关闭按钮
+        Button closeButton = createCloseButton(tabComposite, tabInfo);
+
+        // 初始更新外观
+        updateTabAppearance(tabComposite, tabInfo);
+    }
+
+    /**
+     * 添加标签选择监听器
+     */
+    private void addTabSelectionListener(Composite tabComposite, TabInfo tabInfo) {
+        MouseAdapter selectionAdapter = new MouseAdapter() {
             @Override
             public void mouseDown(MouseEvent e) {
-                if (e.button == 1) {
+                if (e.button == 1) { // 左键点击
                     selectTab(tabComposite, tabInfo);
                 }
             }
-        });
-        Label iconLabel = new Label(tabComposite, SWT.NONE);
+        };
+
+        tabComposite.addMouseListener(selectionAdapter);
+    }
+
+    /**
+     * 创建图标标签
+     */
+    private Label createIconLabel(Composite parent, TabInfo tabInfo) {
+        Label iconLabel = new Label(parent, SWT.NONE);
         if (tabInfo.image != null) {
             iconLabel.setImage(tabInfo.image);
         }
         iconLabel.setLayoutData(new GridData(SWT.LEFT, SWT.CENTER, false, false));
+
+        // 图标也可点击选择标签
         iconLabel.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseDown(MouseEvent e) {
                 if (e.button == 1) {
-                    selectTab(tabComposite, tabInfo);
+                    selectTab(parent, tabInfo);
                 }
             }
         });
-        Label titleLabel = new Label(tabComposite, SWT.NONE);
+
+        return iconLabel;
+    }
+
+    /**
+     * 创建标题标签
+     */
+    private Label createTitleLabel(Composite parent, TabInfo tabInfo) {
+        Label titleLabel = new Label(parent, SWT.NONE);
         titleLabel.setText(tabInfo.title);
         titleLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+        // 标题也可点击选择标签
         titleLabel.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseDown(MouseEvent e) {
                 if (e.button == 1) {
+                    Composite tabComposite = (Composite) parent.getParent();
                     selectTab(tabComposite, tabInfo);
                 }
             }
         });
-        Button closeButton = new Button(tabComposite, SWT.PUSH | SWT.FLAT);
+
+        return titleLabel;
+    }
+
+    /**
+     * 创建关闭按钮
+     */
+    private Button createCloseButton(Composite parent, TabInfo tabInfo) {
+        Button closeButton = new Button(parent, SWT.PUSH | SWT.FLAT);
         closeButton.setText("×");
         closeButton.setLayoutData(new GridData(SWT.RIGHT, SWT.CENTER, false, false));
         closeButton.setToolTipText("Close tab");
-        closeButton.setBackground(tabComposite.getBackground());
+        closeButton.setBackground(parent.getBackground());
+
+        // 鼠标悬停效果
         closeButton.addMouseTrackListener(new MouseTrackAdapter() {
             @Override
             public void mouseEnter(MouseEvent e) {
@@ -248,65 +362,84 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
 
             @Override
             public void mouseExit(MouseEvent e) {
-                closeButton.setBackground(tabComposite.getBackground());
+                closeButton.setBackground(parent.getBackground());
             }
         });
-        closeButton.addSelectionListener(new SelectionAdapter() {
-            @Override
-            public void widgetSelected(SelectionEvent e) {
-                if (tabInfo.editorReference != null) {
-                    workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
-                    tabComposites.remove(tabInfo);
-                }
+
+        // 关闭按钮点击事件
+        closeButton.addSelectionListener(SelectionListener.widgetSelectedAdapter(e -> {
+            if (tabInfo.editorReference != null) {
+                workbenchPage.closeEditor(tabInfo.editorReference, true);
+                tabComposites.remove(tabInfo);
             }
-        });
-        updateTabAppearance(tabComposite, tabInfo);
+        }));
+
+        return closeButton;
     }
 
+    /**
+     * 选择标签
+     */
     private void selectTab(Composite tabComposite, TabInfo tabInfo) {
+        // 取消所有标签的高亮
         for (Composite comp : tabComposites.values()) {
-            TabInfo info = (TabInfo) comp.getData("tabInfo");
-            if (info != null) {
-                info.isActive = false;
-                updateTabAppearance(comp, info);
+            if (!comp.isDisposed()) {
+                TabInfo info = (TabInfo) comp.getData(TAB_INFO_KEY);
+                if (info != null) {
+                    info.isActive = false;
+                    updateTabAppearance(comp, info);
+                }
             }
         }
+
+        // 高亮当前选中标签
         tabInfo.isActive = true;
         updateTabAppearance(tabComposite, tabInfo);
-        lastActiveTab = tabInfo; // 更新最后一个活动标签页
+        lastActiveTab = tabInfo;
+
+        // 激活对应编辑器
         if (tabInfo.editorReference != null) {
             try {
-                workbenchPage.activate(tabInfo.editorReference.getPart(true));
+                workbenchPage.activate(tabInfo.editorReference);
             } catch (Exception e) {
-                System.err.println("Error activating editor: " + e.getMessage());
+                log.error("Error activating editor: " + tabInfo.title, e);
             }
         }
+
+        // 更新查看器选择
         if (tabsViewer != null) {
             tabsViewer.setSelection(new StructuredSelection(tabInfo));
         }
     }
 
+    /**
+     * 创建上下文菜单
+     */
     private void createContextMenu() {
         MenuManager menuMgr = new MenuManager();
         menuMgr.setRemoveAllWhenShown(true);
+
         menuMgr.addMenuListener(manager -> {
             IStructuredSelection selection = (IStructuredSelection) tabsViewer.getSelection();
             if (!selection.isEmpty()) {
                 TabInfo tabInfo = (TabInfo) selection.getFirstElement();
+
                 manager.add(new Action("Close") {
                     @Override
                     public void run() {
                         if (tabInfo.editorReference != null) {
-                            workbenchPage.closeEditor(tabInfo.editorReference.getEditor(false), true);
+                            workbenchPage.closeEditor(tabInfo.editorReference, true);
                         }
                     }
                 });
+
                 manager.add(new Action("Close Others") {
                     @Override
                     public void run() {
                         closeOtherTabs(tabInfo);
                     }
                 });
+
                 manager.add(new Action("Close All") {
                     @Override
                     public void run() {
@@ -315,158 +448,225 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
                 });
             }
         });
+
         tabsViewer.getControl().setMenu(menuMgr.createContextMenu(tabsViewer.getControl()));
         getSite().registerContextMenu(menuMgr, tabsViewer);
     }
 
+    /**
+     * 关闭其他标签
+     */
     private void closeOtherTabs(TabInfo keepTab) {
-        IEditorReference[] editorRefs = workbenchPage.getEditorReferences();
-        for (IEditorReference editorRef : editorRefs) {
-            if (!editorRef.equals(keepTab.editorReference)) {
-                workbenchPage.closeEditor(editorRef.getEditor(false), true);
-            }
-        }
+
     }
 
+    /**
+     * 关闭所有标签
+     */
     private void closeAllTabs() {
         workbenchPage.closeAllEditors(false);
     }
 
+    /**
+     * 刷新所有内容
+     */
     private void refreshAll() {
         refreshAll(true, true);
     }
 
+    /**
+     * 刷新所有内容（带控制标志）
+     */
     private void refreshAll(boolean controlFlag, boolean tabsFlag) {
         List<TabInfo> tabs = new ArrayList<>();
         IEditorReference[] editorRefs = workbenchPage.getEditorReferences();
         IEditorPart activeEditor = workbenchPage.getActiveEditor();
+
         boolean filterCurrentDataSource = curDatasource.isSelected();
         boolean filterCurSchema = curSchema.isSelected();
+
         DBPDataSourceContainer dataSource =
                 DataSourceToolbarUtils.getCurrentDataSource(workbenchPage.getWorkbenchWindow());
-        Conn conn = Conn.from(dataSource, activeEditor);
+        Conn conn = Conn.from(dataSource, activeEditor, workbenchPage.getWorkbenchWindow());
 
-        // 检查 lastActiveTab 的编辑器是否仍然打开，如果已关闭则重置
+        // 检查 lastActiveTab 是否仍然有效
+        validateLastActiv
+    eTab(editorRefs);
+
+        if (controlFlag) {
+            updateControlArea(dataSource, conn);
+        }
+
+        if (!tabsFlag) {
+            return;
+        }
+
+        // 收集标签信息
+        collectTabInfo(
+                tabs,
+                editorRefs,
+                activeEditor,
+                conn,
+                filterCurrentDataSource,
+                filterCurSchema,
+                workbenchPage.getWorkbenchWindow());
+
+        // 排序并更新查看器
+        tabs.sort((e1, e2) -> Boolean.compare(e2.isPinned, e1.isPinned)); // 固定标签优先
+        tabsViewer.setInput(tabs);
+        tabsViewer.refresh();
+
+        // 更新活动标签外观
+        updateActiveTabAppearance(activeEditor);
+    }
+
+    /**
+     * 验证最后活动标签是否有效
+     */
+    private void validateLastActiveTab(IEditorPart[] editorRefs) {
         if (lastActiveTab != null) {
             boolean editorStillOpen = false;
-            for (IEditorReference ref : editorRefs) {
+            for (IEditorPart ref : editorRefs) {
                 if (ref.equals(lastActiveTab.editorReference)) {
                     editorStillOpen = true;
                     break;
                 }
             }
             if (!editorStillOpen) {
-                lastActiveTab = null; // 编辑器已关闭，重置 lastActiveTab
+                lastActiveTab = null;
             }
         }
+    }
 
-        if (controlFlag) {
-            if (dataSource != null) {
-                curDatasource.updateT(conn);
-                curSchema.updateT(conn.catalogAndSchema);
-            }
+    /**
+     * 更新控制区域
+     */
+    private void updateControlArea(DBPDataSourceContainer dataSource, Conn conn) {
+        if (dataSource != null) {
+            curDatasource.updateT(conn);
+            curSchema.updateT(conn.catalogAndSchema);
+        } else {
+            curDatasource.updateT(null);
+            curSchema.updateT(null);
         }
-        if (!tabsFlag) {
-            return;
-        }
-        for (IEditorReference editorRef : editorRefs) {
-            IEditorPart editor = editorRef.getEditor(false);
+    }
+
+    /**
+     * 收集标签信息
+     */
+    private void collectTabInfo(
+            List<TabInfo> tabs,
+            IEditorPart[] editorRefs,
+            IEditorPart activeEditor,
+            Conn conn,
+            boolean filterCurrentDataSource,
+            boolean filterCurSchema,
+            IWorkbenchWindow workbenchWindow) {
+        for (IEditorPart editorRef : editorRefs) {
+            IEditorPart editor = editorRef;
             if (editor != null) {
                 Conn connB = null;
-                if (editor instanceof DBPDataSourceContainerProvider dscp) {
-                    connB = Conn.from(dscp.getDataSourceContainer(), editor);
+                if (editor instanceof DBPDataSourceContainerProvider) {
+                    connB = Conn.from(((DBPDataSourceContainerProvider) editor).getDataSourceContainer(), editor, workbenchWindow);
                 }
-                if (filterCurSchema) {
-                    if (!Conn.sameSchema(conn, connB)) {
-                        continue;
-                    }
-                } else if (filterCurrentDataSource) {
-                    if (!Conn.sameDatasource(conn, connB)) {
-                        continue;
-                    }
+
+                // 应用过滤器
+                if (filterCurSchema && !Conn.sameSchema(conn, connB)) {
+                    continue;
+                } else if (filterCurrentDataSource && !Conn.sameDatasource(conn, connB)) {
+                    continue;
                 }
-                TabInfo tabInfo = new TabInfo();
-                tabInfo.editorReference = editorRef;
-                tabInfo.title = editorRef.getTitle();
-                tabInfo.image = editorRef.getTitleImage();
-                tabInfo.conn = connB;
-                // 设置 isActive：如果活动编辑器不为 null，基于活动编辑器设置；否则基于 lastActiveTab 设置
-                if (activeEditor != null) {
-                    tabInfo.isActive = editorRef.equals(workbenchPage.getReference(activeEditor));
-                    if (tabInfo.isActive) {
-                        lastActiveTab = tabInfo; // 更新 lastActiveTab 为当前活动标签页
-                    }
-                } else {
-                    tabInfo.isActive = (lastActiveTab != null && lastActiveTab.editorReference.equals(editorRef));
-                }
-                tabInfo.isPinned = editorRef.isPinned();
-                tabInfo.tooltip = editorRef.getTitleToolTip();
+
+                // 创建标签信息
+                TabInfo tabInfo = createTabInfo(editorRef, editor, connB, activeEditor);
                 tabs.add(tabInfo);
             }
         }
-        tabs.sort((e1, e2) -> e1.isPinned ? 1 : -(e2.isPinned ? 1 : 0));
-        tabsViewer.setInput(tabs);
-        tabsViewer.refresh();
-        // 更新活动标签页的外观（即使活动编辑器为 null，lastActiveTab 可能已设置）
+    }
+
+    /**
+     * 创建标签信息对象
+     */
+    private TabInfo createTabInfo(
+            IEditorPart editorRef, IEditorPart editor, Conn connB, IEditorPart activeEditor) {
+        TabInfo tabInfo = new TabInfo();
+        tabInfo.editorReference = editorRef;
+        tabInfo.title = editorRef.getTitle();
+        tabInfo.image = editorRef.getTitleImage();
+        tabInfo.conn = connB;
+
+        // 设置活动状态
+        if (activeEditor != null) {
+            tabInfo.isActive = editorRef.equals(workbenchPage.getReference(activeEditor));
+            if (tabInfo.isActive) {
+                lastActiveTab = tabInfo;
+            }
+        } else {
+            tabInfo.isActive = (lastActiveTab != null && lastActiveTab.editorReference.equals(editorRef));
+        }
+
+        tabInfo.tooltip = editorRef.getTitleToolTip();
+
+        return tabInfo;
+    }
+
+    /**
+     * 更新活动标签外观
+     */
+    private void updateActiveTabAppearance(IEditorPart activeEditor) {
         if (activeEditor != null) {
             var activeRef = workbenchPage.getReference(activeEditor);
-            for (TabInfo tab : tabs) {
+            for (TabInfo tab : tabComposites.keySet()) {
                 if (tab.editorReference.equals(activeRef)) {
                     Composite tabComposite = tabComposites.get(tab);
-                    if (tabComposite != null) {
+                    if (tabComposite != null && !tabComposite.isDisposed()) {
                         updateTabAppearance(tabComposite, tab);
                     }
                     break;
                 }
             }
         } else if (lastActiveTab != null) {
-            // 如果活动编辑器为 null，但 lastActiveTab 存在，确保其外观更新
             Composite tabComposite = tabComposites.get(lastActiveTab);
-            if (tabComposite != null) {
+            if (tabComposite != null && !tabComposite.isDisposed()) {
                 updateTabAppearance(tabComposite, lastActiveTab);
             }
         }
     }
 
+    /**
+     * 更新标签外观
+     */
     private void updateTabAppearance(Composite tabComposite, TabInfo tabInfo) {
-        ITheme theme = PlatformUI.getWorkbench().getThemeManager().getCurrentTheme();
+        if (tabComposite.isDisposed()) {
+            return;
+        }
+
         if (tabInfo.isActive) {
-            Color bgColor = theme.getColorRegistry().get(IWorkbenchThemeConstants.ACTIVE_TAB_VERTICAL);
-            Color fgColor = theme.getColorRegistry().get(IWorkbenchThemeConstants.ACTIVE_TAB_TEXT_COLOR);
-            tabComposite.setBackground(bgColor);
             tabComposite.setBackgroundMode(SWT.INHERIT_NONE);
+
             for (Control child : tabComposite.getChildren()) {
-                if (child instanceof Label) {
-                    child.setBackground(bgColor);
-                    child.setForeground(fgColor);
-                    child.setToolTipText(tabInfo.tooltip);
-                } else if (child instanceof Button) {
-                    child.setBackground(bgColor);
-                    child.setForeground(fgColor);
-                }
+                if (child.isDisposed()) continue;
+
+                child.setFont(UIUtils.makeBoldFont(child.getFont()));
             }
         } else {
-            Color defaultBg = theme.getColorRegistry().get(IWorkbenchThemeConstants.INACTIVE_TAB_VERTICAL);
-            Color defaultFg = theme.getColorRegistry().get(IWorkbenchThemeConstants.INACTIVE_TAB_TEXT_COLOR);
-            tabComposite.setBackground(defaultBg);
+
             for (Control child : tabComposite.getChildren()) {
-                if (child instanceof Label) {
-                    child.setToolTipText(tabInfo.tooltip);
-                    child.setBackground(defaultBg);
-                    child.setForeground(defaultFg);
-                } else if (child instanceof Button) {
-                    child.setBackground(defaultBg);
-                    child.setForeground(defaultFg);
-                }
+                if (child.isDisposed()) continue;
+
+                child.setToolTipText(tabInfo.tooltip);
             }
         }
-        tabComposite.redraw();
-        tabComposite.update();
+
+        //        tabComposite.redraw();
+        //        tabComposite.update();
     }
 
     @Override
     public void setFocus() {
-        tabsViewer.getControl().setFocus();
+        if (tabsViewer != null && !tabsViewer.getControl().isDisposed()) {
+            tabsViewer.getControl().setFocus();
+        }
     }
 
     @Override
@@ -474,7 +674,10 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
         if (workbenchPage != null) {
             workbenchPage.removePartListener(this);
         }
-        lastActiveTab = null; // 清理资源
+
+        lastActiveTab = null;
+        tabComposites.clear();
+
         super.dispose();
     }
 
@@ -500,10 +703,12 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
     }
 
     @Override
-    public void partDeactivated(IWorkbenchPart part) {}
+    public void partDeactivated(IWorkbenchPart part) {
+    }
 
     @Override
-    public void partBroughtToTop(IWorkbenchPart part) {}
+    public void partBroughtToTop(IWorkbenchPart part) {
+    }
 
     @Override
     public void updateElement(UIElement element, Map parameters) {
@@ -513,8 +718,9 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
         refreshAll(true, false);
     }
 
+
     private static class TabInfo {
-        IEditorReference editorReference;
+        IEditorPart editorReference;
         String title;
         Image image;
         String tooltip;
@@ -523,25 +729,8 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
         Conn conn;
     }
 
-    private record Conn(String id, String user, String ip, String port, CatalogAndSchema catalogAndSchema)
+    private record Conn(String id, String name, String user, String ip, String port, CatalogAndSchema catalogAndSchema)
             implements ButtonObj.TextObj {
-        private static final String NA = "<N/A>";
-
-        private static String read(Supplier<String> read) {
-            try {
-                String s = read.get();
-                return Objects.requireNonNullElse(s, NA);
-            } catch (Exception e) {
-                return NA;
-            }
-        }
-
-        private static boolean eq(String a, String b) {
-            if (a == null || b == null || List.of(a, b).contains(NA)) {
-                return false;
-            }
-            return Objects.equals(a, b);
-        }
 
         public static boolean sameSchema(Conn a, Conn b) {
             if (a == null || b == null) {
@@ -557,18 +746,45 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
             return eq(a.id, b.id);
         }
 
-        public static Conn from(DBPDataSourceContainer dataSource, IEditorPart editor) {
+        private static boolean eq(String a, String b) {
+            if (a == null || b == null || List.of(a, b).contains(NA)) {
+                return false;
+            }
+            return Objects.equals(a, b);
+        }
+
+        private static String read(Supplier<String> read) {
+            try {
+                String s = read.get();
+                return Objects.requireNonNullElse(s, NA);
+            } catch (Exception e) {
+                return NA;
+            }
+        }
+
+        public static Conn from(DBPDataSourceContainer dataSource, IEditorPart editor, IWorkbenchWindow workbenchWindow) {
             try {
                 DBPConnectionConfiguration conf = dataSource.getConnectionConfiguration();
                 CatalogAndSchema cs = CatalogAndSchema.from(editor);
+                String connectionName = dataSource.getName();
+                if (workbenchWindow != null) {
+                    GC gc = new GC(workbenchWindow.getShell());
+                    try {
+                        connectionName = UITextUtils.getShortText(gc, connectionName, 200);
+                    } finally {
+                        gc.dispose();
+                    }
+                }
+
                 return new Conn(
                         read(dataSource::getId),
+                        connectionName,
                         read(conf::getUserName),
                         read(conf::getHostName),
                         read(conf::getHostPort),
                         cs);
             } catch (Exception ex) {
-                return new Conn(NA, NA, NA, NA, new CatalogAndSchema(null, null));
+                return new Conn(null, null, null, null, null, new CatalogAndSchema(null, null));
             }
         }
 
@@ -590,9 +806,12 @@ public class VerticalEditorTabsView extends ViewPart implements IPartListener, I
 
         @Override
         public String text() {
-            return "%s@%s:%s".formatted(user, ip, port);
+            return ip != null ? "%s@%s:%s".formatted(user, ip, port) : this.name;
         }
 
+        /**
+         * 目录和模式信息
+         */
         record CatalogAndSchema(String catalog, String schema) implements ButtonObj.TextObj {
             static CatalogAndSchema from(IEditorPart activeEditor) {
                 IEditorInput editorInput = activeEditor.getEditorInput();
